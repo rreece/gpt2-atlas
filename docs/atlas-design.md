@@ -1,6 +1,6 @@
 # GPT-2 Activation Atlas — Design Doc
 
-*Ryan Reece, 2026-10-22, updated 2026-10-25. Living version: [Claude Doc](https://claude.ai/artifact/4UKoy7XmiR5BfQKNthvETu).*
+*Ryan Reece, 2026-10-22, updated 2026-10-26.*
 
 ## Summary
 
@@ -15,7 +15,7 @@ The atlas should answer "what does this unit respond to, how often, and how stro
 **Goals**
 
 - Per-unit summaries for every MLP neuron (12 × 3072) and residual dimension (13 × 768): count, mean, std, max, firing rate, quantiles, histogram.
-- Top-k exemplars per unit, stored as pointers into the token stream and shown with decoded context.
+- Top-k exemplars per unit (and bottom-k for residual dimensions, which are signed), stored as pointers into the token stream and shown with decoded context.
 - Residual-stream mean and covariance per layer, for PCA, whitening and outlier dimensions.
 - The same outputs in SAE feature bases (stage 2), so neurons and features can be compared side by side.
 - Horizontal scaling: shards run on any number of machines and merge exactly.
@@ -43,7 +43,7 @@ Activations are a pure function of (weights, tokens), so we keep tokens plus red
 
 The pipeline is three commands over plain files: `tokenize` once, `run` per shard anywhere, `export` to merge.
 
-![Atlas pipeline: tokenize, sharded run, export, query](figures/atlas_architecture.png)
+![Atlas pipeline: tokenize, sharded run, export, query](figures/atlas_architecture.svg)
 
 **Data model.** A *row* is one sequence the model processes independently: BOS plus 127 consecutive tokens from one document; by default one randomly chosen window per document, from two OpenWebText files. A *pointer* is `(row, pos)`, stored as the integer `row × 128 + pos`; positions 1–127 are real tokens. Shards are row ranges, so a shard's state is self-describing and any set of non-overlapping shards merges into one atlas.
 
@@ -63,6 +63,7 @@ Stage 1 is built and validated on 1M tokens, with both backends. The code lives 
 | HF backend vs. TransformerLens bridge, per hook (7 hook types × layers 0, 5, 11, BOS included) | 21 of 21 agree within 2e-5 of the activation scale; raw HF residuals fail without centering, as they should |
 | Full 1M-token atlas, HF vs. TL backend | means, stds, quantiles agree to ~1e-5 relative; largest difference in any unit's max is 2e-4; 0.6% of top-k pointers swap among exact ties (identical left contexts) |
 | Pointers reproduce: recompute stored top-k entries from `(row, pos)` | 10 of 10 match to 5 decimals, layers 0, 9 and 11 |
+| Bottom-k for residual dimensions (added 2026-10-26) | top side of a rerun identical to the run without it; 12 of 12 sampled bottom-k entries recompute to 1e-6 relative; no change in speed |
 | Sharded run, with bootstrap over shards, merged by `export` | 7,814 rows from 7,814 documents in 8 shards (4 per OpenWebText file); errors on unit means ~0.002 of their spread (~250k effective samples), effective dimension to ±0.5 |
 | Residual stream behaves like known GPT-2 | variance grows ~5000× from layer 0 to the final residual; dim 480 carries 7.5% of the variance at layer 1, falling to 2% by layer 7; from layer 7 to 11 no basis dimension carries more than ~2.5%; at the final residual dims 496, 430 and 36 carry 11%, 8% and 8%; effective dimension peaks at ~170 in layers 7–9 and collapses to ~7 at the final residual |
 | Neurons behave like known GPT-2 | rarely-firing neurons (firing rate < 1e-4) concentrate in layers 0–2: 62, 87, 21 |
@@ -82,7 +83,6 @@ Tokenizing takes about 1 min and export 9 s with either backend.
 
 - The accumulators still cost about as much as the forward pass (full run ~5,150 vs ~9,700 tok/s forward-only on an M4): top-k and histograms each read every MLP activation. Histograms use every 4th token, which shifts quantiles by a median 0.02 std at p99 (0.13 std for the worst 1% of units). Further speed belongs on CUDA.
 - Exemplars now span ~8k documents (one window each), but rare units (firing rate < 1e-4) still have fewer than ~100 examples; deep scans of single units are the planned fix.
-- Top-k keeps only the largest values; residual dimensions need bottom-k too.
 - Statistics cover positions 1–127 only. Behaviour that depends on long context is not seen.
 - Rows start mid-document after a BOS, which GPT-2 never saw in training (its windows started mid-document without BOS).
 
@@ -90,7 +90,7 @@ Tokenizing takes about 1 min and export 9 s with either backend.
 
 The next step is finishing stage 1 at laptop scale, not adding SAEs: the pipeline is basis-independent, so anything fixed now carries over to every dictionary later.
 
-![Atlas roadmap: 4 stages, 3 gates](figures/atlas_roadmap.png)
+![Atlas roadmap: 4 stages, 3 gates](figures/atlas_roadmap.svg)
 
 Each stage reuses the same tokenize → run → export pipeline and only adds accumulators or a change of basis inside the hooks. The research payoff comes in stage 2: checking whether SAE features at layers 9–11 change under name-mover ablation the way the head-level Hydra accounting predicts.
 
@@ -101,7 +101,7 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 | Source | How we vary it | Applies from |
 | --- | --- | --- |
 | Statistical (finite tokens) | bootstrap over shards, resampled within each file (done: 8 shards) | stage 1 |
-| Corpus | a second OpenWebText file turned out to be a replicate (differs no more than two halves of one file); a real corpus systematic needs FineWeb or code | stage 1 |
+| Corpus | a second OpenWebText file turned out to be a statistical replicate: different documents (none shared), same distribution, so its statistics differ no more than two halves of one file do; a real corpus systematic needs FineWeb or code | stage 1 |
 | Context length and position | seq_len 128 vs. 512; statistics split by position bucket | stage 1 |
 | Processing convention | compatibility mode on vs. raw HF weights (affects residual statistics only) | stage 1 |
 | SAE dictionary | Bloom 24k vs. OpenAI 32k / 128k on the same layer: feature splitting and matching | stage 2 |

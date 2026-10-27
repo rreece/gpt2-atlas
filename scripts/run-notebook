@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Execute a notebook headlessly and write the executed copy to results/.
+# Execute a notebook headlessly, in place: the repo copy keeps the outputs of its latest run.
 #     run-notebook                        # runs notebooks/atlas.ipynb
 #     run-notebook notebooks/other.ipynb
 set -euo pipefail
 : "${PROJECT_PATH:?source setup.sh first}"
 nb="${1:-${PROJECT_PATH}/notebooks/atlas.ipynb}"
-mkdir -p "${PROJECT_PATH}/results"
-jupyter nbconvert --to notebook --execute "${nb}" \
+jupyter nbconvert --to notebook --execute --inplace "${nb}" \
     --ExecutePreprocessor.kernel_name=gpt2-atlas \
-    --ExecutePreprocessor.timeout=1800 \
-    --output-dir "${PROJECT_PATH}/results"
+    --ExecutePreprocessor.timeout=1800

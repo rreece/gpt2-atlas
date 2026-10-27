@@ -97,7 +97,10 @@ def test_run_gives_same_atlas(models, tokens):
         scale = mb.max.abs().max()
         assert (ma.mean - mb.mean).abs().max() <= 2e-5 * scale
         assert (ma.var.sqrt() - mb.var.sqrt()).abs().max() <= 2e-5 * scale
-        torch.testing.assert_close(a.acc[name]["topk"].values, b.acc[name]["topk"].values, rtol=1e-4, atol=2e-5 * scale.item())
+        for kind in ("topk", "bottomk"):
+            if kind in a.acc[name]:
+                va, vb = a.acc[name][kind].values, b.acc[name][kind].values
+                torch.testing.assert_close(va, vb, rtol=1e-4, atol=2e-5 * max(scale.item(), vb.abs().max().item()))
         # Values within rounding of a bin edge may land in the neighbouring bin.
         ca, cb = a.acc[name]["hist"].counts, b.acc[name]["hist"].counts
         assert (ca - cb).abs().sum() <= 2e-3 * cb.sum()

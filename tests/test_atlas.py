@@ -44,12 +44,13 @@ def test_covariance_matches_numpy(x):
     np.testing.assert_allclose(c.cov.numpy(), ref, rtol=1e-5, atol=1e-8)
 
 
-def test_topk_matches_full_topk(x):
+@pytest.mark.parametrize("largest", [True, False])
+def test_topk_matches_full_topk(x, largest):
     index = torch.arange(len(x)) * 10  # arbitrary global indices
-    t = TopK(x.shape[1], k=5)
+    t = TopK(x.shape[1], k=5, largest=largest)
     for ch, ix in zip(chunks(x), chunks(index)):
         t.update(ch, ix)
-    v, i = x.topk(5, dim=0)
+    v, i = x.topk(5, dim=0, largest=largest)
     torch.testing.assert_close(t.values, v)
     assert torch.equal(t.index, index[i])
 
@@ -94,6 +95,9 @@ def test_atlas_state_round_trip_and_merge(x, tmp_path, stride):
                     torch.testing.assert_close(sa[key], sw[key], rtol=1e-5, atol=1e-6)
                 else:
                     assert sa[key] == sw[key]
+    # Residual dims are signed and keep bottom-k too; MLP neurons don't.
+    assert "bottomk" in whole.acc["blocks.0.hook_resid_pre"] and "bottomk" not in whole.acc["blocks.0.mlp.hook_post"]
+    assert a.acc["blocks.0.hook_resid_pre"]["bottomk"].largest is False
     # Position 0 (BOS) is excluded; histograms see 1 in `stride` of the remaining tokens.
     assert whole.acc["blocks.0.mlp.hook_post"]["moments"].n == 48 * 99
     assert whole.acc["blocks.0.mlp.hook_post"]["hist"].counts.sum(1).eq(-(-48 * 99 // stride)).all()
