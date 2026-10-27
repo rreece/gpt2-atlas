@@ -8,11 +8,12 @@ Pipeline
    rows come from two OpenWebText files, so 1M tokens span ~8k documents and the two files give a
    corpus systematic. `docs.npy` holds (file, doc_id, offset) for each row.
 2. `run`: stream rows through the model. Forward hooks reduce each batch on the device into
-   mergeable accumulators (moments, histograms, top-k, residual covariance), so raw activations
-   never leave the device. Writes one `state-<start>-<stop>.pt` per row range: `--shards N` runs N
+   mergeable accumulators (moments, histograms, top-k, and for the residual stream bottom-k and
+   covariance), so raw activations never leave the device. Writes one `state-<start>-<stop>.pt` per row range: `--shards N` runs N
    ranges (none straddling two files) in one process, `--rows` one range, on any machine.
 3. `export`: merge all states in the directory and write `neurons.parquet`, `topk.parquet`,
-   `resid.npz` and `histograms.npz`, ready for querying with DuckDB. With several shards it adds
+   `resid.npz` and `histograms.npz`, ready for querying with DuckDB. `topk.parquet` holds both
+   extremes, told apart by `side` ('top', or 'bottom' for residual dims). With several shards it adds
    bootstrap errors (resampling shards within each file) and per-shard moments (`shards.parquet`).
 
     python -m atlas tokenize results/atlas --n-tokens 1000000
@@ -258,10 +259,14 @@ class Histogram(Accumulator):
 
 
 class TopK(Accumulator):
-    """Per-unit k largest values and the global token index of each (row * seq_len + pos)."""
+    """Per-unit k largest values (or, with largest=False, k smallest) and the global token index of each
+    (row * seq_len + pos). Rank 0 is the most extreme."""
 
-    def __init__(self, d: int, k: int, device="cpu"):
-        self.values = torch.full((k, d), -torch.inf, device=device)
+    largest = True  # states written before bottom-k existed don't carry the flag
+
+    def __init__(self, d: int, k: int, device="cpu", largest: bool = True):
+        self.largest = largest
+        self.values = torch.full((k, d), -torch.inf if largest else torch.inf, device=device)
         self.index = torch.full((k, d), -1, dtype=torch.int64, device=device)
 
     def to(self, device):
@@ -270,15 +275,16 @@ class TopK(Accumulator):
 
     def update(self, x: torch.Tensor, index: torch.Tensor):
         """x: [N, d]; index: [N] global token index of each row of x."""
-        v, i = x.topk(min(self.values.shape[0], x.shape[0]), dim=0)
+        v, i = x.topk(min(self.values.shape[0], x.shape[0]), dim=0, largest=self.largest)
         self._merge(v, index[i])
 
     def merge(self, b: TopK):
+        assert self.largest == b.largest, "cannot merge top-k with bottom-k"
         self._merge(b.values.to(self.values.device), b.index.to(self.index.device))
 
     def _merge(self, values, index):
         k = self.values.shape[0]
-        v, i = torch.cat([self.values, values]).topk(k, dim=0)
+        v, i = torch.cat([self.values, values]).topk(k, dim=0, largest=self.largest)
         self.values, self.index = v, torch.cat([self.index, index]).gather(0, i)
 
 
@@ -316,7 +322,8 @@ def hist_mask(index: torch.Tensor, T: int, stride: int) -> torch.Tensor:
 
 class Atlas:
     """Accumulators for every hook. Moments, top-k and covariance see every token; histograms (and so the
-    exported quantiles) see every `hist_stride`-th token, which cuts their cost, the largest, by that factor."""
+    exported quantiles) see every `hist_stride`-th token, which cuts their cost, the largest, by that factor.
+    Residual dimensions are signed, so they also keep bottom-k; MLP neurons (GELU) keep only top-k."""
 
     def __init__(self, hooks: dict[str, int], k: int = 20, n_bins: int = 256, hist_stride: int = 1, device="cpu"):
         edges = asinh_edges(n_bins)
@@ -327,6 +334,7 @@ class Atlas:
         for name, d in hooks.items():
             a = {"moments": Moments(d), "hist": Histogram(d, edges, device), "topk": TopK(d, k, device)}
             if hook_kind(name) == "resid":
+                a["bottomk"] = TopK(d, k, device, largest=False)
                 a["cov"] = Covariance(d)
             self.acc[name] = a
 
@@ -337,6 +345,8 @@ class Atlas:
         a["moments"].update(x)
         a["hist"].update(x if self.hist_stride == 1 else x[hist_mask(index, act.shape[1], self.hist_stride)])
         a["topk"].update(x, index)
+        if "bottomk" in a:
+            a["bottomk"].update(x, index)
         if "cov" in a:
             a["cov"].update(x)
 
@@ -345,6 +355,7 @@ class Atlas:
         assert self.hist_stride == other.hist_stride, "histograms from different token subsamples cannot merge"
         self.n_rows += other.n_rows
         for name, a in self.acc.items():
+            assert a.keys() == other.acc[name].keys(), f"{name}: states keep different accumulators; rerun the older shards"
             for kind, acc in a.items():
                 acc.merge(other.acc[name][kind])
 
@@ -358,7 +369,7 @@ class Atlas:
 
     @classmethod
     def from_state(cls, state: dict, device="cpu") -> Atlas:
-        classes = {"moments": Moments, "hist": Histogram, "topk": TopK, "cov": Covariance}
+        classes = {"moments": Moments, "hist": Histogram, "topk": TopK, "bottomk": TopK, "cov": Covariance}
         obj = cls.__new__(cls)
         obj.hooks, obj.n_rows = state["hooks"], state["n_rows"]
         obj.hist_stride = state.get("hist_stride", 1)  # states written before subsampling existed
@@ -588,7 +599,7 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
     T = tokens.shape[1]
     neurons, topk = [], []
     for name, a in atlas.acc.items():
-        m, h, t = a["moments"], a["hist"], a["topk"]
+        m, h = a["moments"], a["hist"]
         d = len(m.mean)
         q = h.quantiles(list(QUANTILES.values()))
         neurons.append(pd.DataFrame({
@@ -597,13 +608,16 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
             "frac_pos": (m.n_pos.double() / m.n).numpy(),
             **{col: q[:, j] for j, col in enumerate(QUANTILES)},
         }))
-        values, index = t.values.cpu().numpy(), t.index.cpu().numpy()
-        k = values.shape[0]
-        topk.append(pd.DataFrame({
-            "hook": name, "kind": hook_kind(name), "layer": hook_layer(name),
-            "unit": np.tile(np.arange(d), k), "rank": np.repeat(np.arange(k), d),
-            "value": values.ravel(), "row": index.ravel() // T, "pos": index.ravel() % T,
-        }))
+        for side, kind in (("top", "topk"), ("bottom", "bottomk")):
+            if kind not in a:
+                continue
+            values, index = a[kind].values.cpu().numpy(), a[kind].index.cpu().numpy()
+            k = values.shape[0]
+            topk.append(pd.DataFrame({
+                "hook": name, "kind": hook_kind(name), "layer": hook_layer(name), "side": side,
+                "unit": np.tile(np.arange(d), k), "rank": np.repeat(np.arange(k), d),
+                "value": values.ravel(), "row": index.ravel() // T, "pos": index.ravel() % T,
+            }))
     neurons, topk = pd.concat(neurons, ignore_index=True), pd.concat(topk, ignore_index=True)
     boot = len(shards) >= 2
     if boot:
@@ -625,7 +639,7 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
     topk = topk[topk["row"] >= 0]  # unfilled slots, only possible with fewer than k tokens
     topk["token"], topk["context"] = contexts(tokens, tokenizer, topk["row"].to_numpy(), topk["pos"].to_numpy())
     neurons.to_parquet(out / "neurons.parquet", index=False)
-    topk.sort_values(["hook", "unit", "rank"]).to_parquet(out / "topk.parquet", index=False)
+    topk.sort_values(["hook", "unit", "side", "rank"]).to_parquet(out / "topk.parquet", index=False)
 
     resid = [name for name in atlas.acc if "cov" in atlas.acc[name]]
     resid.sort(key=hook_layer)
