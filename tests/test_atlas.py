@@ -1,11 +1,13 @@
 """The atlas only scales if merging is exact: shard A + shard B must equal one pass over A + B."""
 
+import itertools
+
 import numpy as np
 import pytest
 import torch
 
 from atlas import (BOS, Atlas, Covariance, Histogram, Moments, TopK, asinh_edges, bootstrap_weights, hist_mask,
-                   pooled_cov_summaries, pooled_moments, shard_ranges, tokenize)
+                   pooled_cov_summaries, pooled_moments, shard_ranges, spread_rows, tokenize)
 
 
 @pytest.fixture
@@ -117,11 +119,11 @@ def test_tokenize_rows_are_bos_plus_one_document_window():
         def __call__(self, texts):
             return {"input_ids": [list(range(int(t))) for t in texts]}
 
-    tokens, docs = tokenize(["10", "2", "8"], FakeTokenizer(), n_tokens=12, seq_len=4)
+    tokens, docs = tokenize(enumerate(["10", "2", "8"]), FakeTokenizer(), n_tokens=12, seq_len=4)
     # doc 0 (10 tokens) -> windows at 0, 3, 6 (partial tail dropped); doc 1 too short; doc 2 -> 0.
     assert tokens.tolist() == [[BOS, 0, 1, 2], [BOS, 3, 4, 5], [BOS, 6, 7, 8]]
     assert docs.tolist() == [[0, 0], [0, 3], [0, 6]]
-    tokens, docs = tokenize(["10", "2", "8"], FakeTokenizer(), n_tokens=16, seq_len=4)
+    tokens, docs = tokenize(enumerate(["10", "2", "8"]), FakeTokenizer(), n_tokens=16, seq_len=4)
     assert docs.tolist()[-1] == [2, 0]
 
 
@@ -130,11 +132,25 @@ def test_tokenize_caps_windows_per_document():
         def __call__(self, texts):
             return {"input_ids": [list(range(int(t))) for t in texts]}
 
-    tokens, docs = tokenize(["30", "2", "30", "30"], FakeTokenizer(), n_tokens=12, seq_len=4, max_windows_per_doc=1, seed=0)
+    tokens, docs = tokenize(enumerate(["30", "2", "30", "30"]), FakeTokenizer(), n_tokens=12, seq_len=4, max_windows_per_doc=1, seed=0)
     assert docs[:, 0].tolist() == [0, 2, 3]  # one window per document; doc 1 is too short
     assert all(off % 3 == 0 and off <= 27 for off in docs[:, 1])
-    again, _ = tokenize(["30", "2", "30", "30"], FakeTokenizer(), n_tokens=12, seq_len=4, max_windows_per_doc=1, seed=0)
+    again, _ = tokenize(enumerate(["30", "2", "30", "30"]), FakeTokenizer(), n_tokens=12, seq_len=4, max_windows_per_doc=1, seed=0)
     assert np.array_equal(tokens, again)  # seeded: reproducible
+
+
+def test_spread_rows_samples_across_the_file(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    pq.write_table(pa.table({"text": [f"doc {i}" for i in range(5000)]}), tmp_path / "f.parquet", row_group_size=100)
+    pf = pq.ParquetFile(tmp_path / "f.parquet")
+    got = list(itertools.islice(spread_rows(pf, "text", n_docs=500, seed=0), 1000))
+    assert all(text == f"doc {row}" for row, text in got)  # rows index the file
+    rows = [row for row, _ in got]
+    assert len(set(rows)) == len(rows)
+    assert len({r // 100 for r in rows}) == 1000 // 40  # 40 documents from each of 25 row groups, not 10 whole ones
+    assert got == list(itertools.islice(spread_rows(pf, "text", n_docs=500, seed=0), 1000))  # seeded
 
 
 def test_shard_ranges_respect_files():

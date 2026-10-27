@@ -2,11 +2,13 @@
 
 Pipeline
 --------
-1. `tokenize`: OpenWebText -> `tokens.npy`, uint16 [n_rows, seq_len]. Each row is [BOS] followed by
-   a (seq_len - 1)-token window of a single document. Windows never cross documents, and partial
-   tail windows are dropped. By default each document contributes one randomly chosen window and
-   rows come from two OpenWebText files, so 1M tokens span ~8k documents and the two files give a
-   corpus systematic. `docs.npy` holds (file, doc_id, offset) for each row.
+1. `tokenize`: a corpus (`--dataset`: OpenWebText, FineWeb or Python code) -> `tokens.npy`, uint16
+   [n_rows, seq_len]. Each row is [BOS] followed by a (seq_len - 1)-token window of a single document.
+   Windows never cross documents, and partial tail windows are dropped. By default each document
+   contributes one randomly chosen window, documents are sampled across the whole of each file, and
+   rows come from two files of the corpus, so 1M tokens span ~8k documents and the two files give a
+   within-corpus replicate. `docs.npy` holds (file, doc_id, offset) for each row, doc_id being the
+   document's row in its Parquet file.
 2. `run`: stream rows through the model. Forward hooks reduce each batch on the device into
    mergeable accumulators (moments, histograms, top-k, and for the residual stream bottom-k and
    covariance), so raw activations never leave the device. Writes one `state-<start>-<stop>.pt` per row range: `--shards N` runs N
@@ -16,7 +18,7 @@ Pipeline
    extremes, told apart by `side` ('top', or 'bottom' for residual dims). With several shards it adds
    bootstrap errors (resampling shards within each file) and per-shard moments (`shards.parquet`).
 
-    python -m atlas tokenize results/atlas --n-tokens 1000000
+    python -m atlas tokenize results/atlas --n-tokens 1000000          # --dataset fineweb|code for another corpus
     python -m atlas run results/atlas --shards 8       # or --rows 0:4000 on one machine, 4000:7874 on another
     python -m atlas export results/atlas
     python -c "import duckdb; duckdb.sql(\"select * from 'results/atlas/topk.parquet' where layer = 9 and unit = 123 order by rank\").show()"
@@ -34,7 +36,8 @@ Conventions
   as the reference (tests/test_backends.py checks they agree).
 - MPS has no float64, so each batch is reduced on the device in float32. Moments and covariances
   are then merged on the CPU in float64 using Chan et al.'s parallel formulas.
-- All statistics are conditional on the corpus (OpenWebText) and on positions 1..seq_len-1.
+- All statistics are conditional on the corpus (OpenWebText unless `--dataset` says otherwise) and on
+  positions 1..seq_len-1.
 """
 
 from __future__ import annotations
@@ -54,26 +57,55 @@ import torch
 torch.set_grad_enabled(False)
 
 BOS = 50256  # <|endoftext|>: GPT-2's BOS and document separator
-OWT_REPO = "Skylion007/openwebtext"
 
 # ---------------------------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------------------------
 
 
-def owt_texts(shard: int = 0):
-    """Yields documents from one of the 80 OpenWebText Parquet files (about 100M tokens each)."""
-    import pyarrow.parquet as pq
-    from huggingface_hub import hf_hub_download
+# Corpora as Parquet files on the HF Hub: `path` takes the file number. codeparrot-clean (Python from GitHub) is
+# read from the Hub's Parquet conversion of its JSON files.
+DATASETS = {
+    "owt": SimpleNamespace(repo="Skylion007/openwebtext", path="plain_text/train-{:05d}-of-00080.parquet", column="text"),
+    "fineweb": SimpleNamespace(repo="HuggingFaceFW/fineweb", path="sample/10BT/{:03d}_00000.parquet", column="text"),
+    "code": SimpleNamespace(repo="codeparrot/codeparrot-clean", revision="refs/convert/parquet",
+                            path="default/partial-train/{:04d}.parquet", column="content"),
+}
 
-    path = hf_hub_download(OWT_REPO, f"plain_text/train-{shard:05d}-of-00080.parquet", repo_type="dataset")
-    for batch in pq.ParquetFile(path).iter_batches(batch_size=1000, columns=["text"]):
-        yield from batch.column("text").to_pylist()
+
+def corpus_texts(dataset: str, file: int, n_docs: int, seed: int = 0):
+    """Yields (row, text) for documents spread over one Parquet file of `dataset`, streamed from the Hub.
+
+    Files are not shuffled (FineWeb's neighbouring rows share a crawl, code files a repository), so the first
+    rows would sample a few clumps. Instead, visit row groups in a seeded random order and take the same number
+    of random documents from each, enough for about 2 * n_docs documents over the whole file; `row` is the
+    document's row in the file. Only the row groups visited are downloaded.
+    """
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfFileSystem
+
+    d = DATASETS[dataset]
+    rev = f"@{d.revision.replace('/', '%2F')}" if hasattr(d, "revision") else ""
+    pf = pq.ParquetFile(HfFileSystem().open(f"datasets/{d.repo}{rev}/{d.path.format(file)}", block_size=8 << 20))
+    yield from spread_rows(pf, d.column, n_docs, seed)
+
+
+def spread_rows(pf, column: str, n_docs: int, seed: int = 0):
+    """The sampling behind corpus_texts, for an open pyarrow ParquetFile."""
+    md = pf.metadata
+    sizes = [md.row_group(g).num_rows for g in range(md.num_row_groups)]
+    starts = np.cumsum([0] + sizes)
+    per_group = max(40, -(-2 * n_docs // len(sizes)))
+    rng = np.random.default_rng(seed)
+    for g in rng.permutation(len(sizes)):
+        texts = pf.read_row_group(int(g), columns=[column]).column(0).to_pylist()
+        for i in rng.choice(len(texts), min(per_group, len(texts)), replace=False):
+            yield int(starts[g] + i), texts[i]
 
 
 def tokenize(texts, tokenizer, n_tokens: int, seq_len: int = 128, max_windows_per_doc: int | None = None,
              seed: int = 0, batch_size: int = 256):
-    """Splits documents into rows of [BOS] + (seq_len - 1) tokens from one document.
+    """Splits documents, given as (doc_id, text) pairs, into rows of [BOS] + (seq_len - 1) tokens from one document.
 
     With max_windows_per_doc, a document with more windows contributes that many, chosen at random
     (seeded, so reproducible): rows then span many more documents, at the cost of tokenizing more text.
@@ -85,9 +117,9 @@ def tokenize(texts, tokenizer, n_tokens: int, seq_len: int = 128, max_windows_pe
     n_rows = -(-n_tokens // seq_len)
     rng = np.random.default_rng(seed)
     rows, docs = [], []
-    doc_id = 0
     for batch in itertools.batched(texts, batch_size):
-        for ids in tokenizer(list(batch))["input_ids"]:
+        doc_ids, batch = zip(*batch)
+        for doc_id, ids in zip(doc_ids, tokenizer(list(batch))["input_ids"]):
             offs = range(0, len(ids) - w + 1, w)
             if max_windows_per_doc and len(offs) > max_windows_per_doc:
                 offs = sorted(int(o) for o in rng.choice(offs, max_windows_per_doc, replace=False))
@@ -96,7 +128,6 @@ def tokenize(texts, tokenizer, n_tokens: int, seq_len: int = 128, max_windows_pe
                 docs.append((doc_id, off))
                 if len(rows) == n_rows:
                     return np.array(rows, dtype=np.uint16), np.array(docs, dtype=np.int64)
-            doc_id += 1
     raise ValueError(f"ran out of text after {len(rows)} rows")
 
 
@@ -505,7 +536,7 @@ def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, 
 #
 # Each shard is an independent sample of rows, so resampling shards with replacement and pooling
 # them gives bootstrap errors for any mergeable statistic. Shards are resampled within their
-# OpenWebText file, so the file-to-file difference stays a separate, systematic, comparison.
+# corpus file, so the file-to-file difference stays a separate comparison.
 # Rows within a shard are correlated (neighbouring documents, shared topics); resampling whole
 # shards accounts for that, at the price of few resampling units: treat errors from 4 shards per
 # file as approximate.
@@ -705,7 +736,7 @@ def load_tokenizer():
 
 
 def row_files(dir: Path) -> np.ndarray:
-    """OpenWebText file of each row; directories tokenized before multi-file support have one file."""
+    """Corpus file of each row; directories tokenized before multi-file support have one file."""
     docs = np.load(dir / "docs.npy")
     return docs[:, 0] if docs.shape[1] == 3 else np.zeros(len(docs), dtype=np.int64)
 
@@ -720,11 +751,12 @@ def git_commit() -> str:
 def main(argv=None):
     p = argparse.ArgumentParser(prog="atlas", description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("tokenize", help="OpenWebText -> tokens.npy")
+    s = sub.add_parser("tokenize", help="corpus -> tokens.npy")
     s.add_argument("dir", type=Path)
     s.add_argument("--n-tokens", type=float, default=1e6)
     s.add_argument("--seq-len", type=int, default=128)
-    s.add_argument("--files", default="0,1", help="which of the 80 OpenWebText Parquet files, comma-separated; tokens are split evenly")
+    s.add_argument("--dataset", choices=list(DATASETS), default="owt", help="owt: OpenWebText; fineweb: FineWeb sample-10BT; code: codeparrot-clean (Python)")
+    s.add_argument("--files", default="0,1", help="which Parquet files of the dataset, comma-separated; tokens are split evenly")
     s.add_argument("--max-windows-per-doc", type=int, default=1, help="0 = every window of every document")
     s.add_argument("--seed", type=int, default=0)
     s = sub.add_parser("run", help="accumulate statistics over a row range -> state-<start>-<stop>.pt")
@@ -742,18 +774,24 @@ def main(argv=None):
     args.dir.mkdir(parents=True, exist_ok=True)
 
     if args.cmd == "tokenize":
+        from huggingface_hub import HfApi
+
         if stale := sorted(args.dir.glob("state-*.pt")):
             p.error(f"{args.dir} has {len(stale)} state file(s) from earlier tokens; use a new directory or delete them")
         t0 = time.time()
         files = [int(f) for f in args.files.split(",")]
-        parts = [tokenize(owt_texts(f), load_tokenizer(), int(args.n_tokens) // len(files), args.seq_len,
-                          args.max_windows_per_doc or None, args.seed + f) for f in files]
+        n_tokens = int(args.n_tokens) // len(files)
+        parts = [tokenize(corpus_texts(args.dataset, f, -(-n_tokens // args.seq_len), args.seed + f), load_tokenizer(),
+                          n_tokens, args.seq_len, args.max_windows_per_doc or None, args.seed + f) for f in files]
         tokens = np.concatenate([t for t, _ in parts])
+        d = DATASETS[args.dataset]
+        revision = HfApi().dataset_info(d.repo, revision=getattr(d, "revision", None)).sha  # pin the data read
         docs = np.concatenate([np.column_stack([np.full(len(d), f), d]) for f, (_, d) in zip(files, parts)])
         np.save(args.dir / "tokens.npy", tokens)
         np.save(args.dir / "docs.npy", docs)
         manifest = {
-            "dataset": OWT_REPO, "files": files, "rows_per_file": [len(t) for t, _ in parts], "seq_len": args.seq_len,
+            "dataset": args.dataset, "repo": d.repo, "revision": revision,
+            "paths": [d.path.format(f) for f in files], "files": files, "rows_per_file": [len(t) for t, _ in parts], "seq_len": args.seq_len,
             "n_rows": len(tokens), "n_docs": len(np.unique(docs[:, :2], axis=0)),
             "max_windows_per_doc": args.max_windows_per_doc, "seed": args.seed, "tokenizer": "gpt2",
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
