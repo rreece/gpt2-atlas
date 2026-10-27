@@ -22,6 +22,7 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
 ## Run
 
     run-atlas                                # 1M tokens -> results/atlas/*.parquet, ~5 min on an M4
+    run-atlas results/atlas-fineweb 1e6 fineweb   # same for FineWeb; `code` for Python (codeparrot-clean)
     jupyter lab notebooks/atlas.ipynb        # explore: residual geometry, neuron stats, errors, top contexts
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
     python -c "import duckdb; duckdb.sql(\"select value, context from 'results/atlas/topk.parquet' where kind='post' and layer=9 and unit=1000 order by rank\").show()"
