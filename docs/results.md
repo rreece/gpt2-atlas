@@ -16,8 +16,12 @@ atlas on 1M tokens each of FineWeb and Python code measures how much of it depen
   deviations away from zero on almost every token. The covariance view subtracts the mean, so it does not see them.
   They are the same dimensions on all three corpora.
 - **Rarely-firing MLP neurons live in layers 0–2** (169 of the 182 neurons that fire on fewer than 1 in 10⁴ tokens),
-  and they are mostly the same neurons on every corpus. 109 neurons never fire on any of the 3M tokens. Layer 1's
-  median neuron fires on 29% of tokens, at least twice as often as any other layer's.
+  and they are mostly the same neurons on every corpus. Layer 1's median neuron fires on 29% of tokens, at least twice
+  as often as any other layer's.
+- **89 neurons in layers 0–2 never fire in 50M tokens.** A deep scan of layers 0–2 over 50M OpenWebText tokens checked
+  the 99 there that never fired on 3 × 1M tokens: 10 are merely rare, and 89 stay silent (rate below 6×10⁻⁸). About a
+  third of those stay well below threshold, the closest thing to dead neurons a sample can show; another third come
+  within 0.5 of firing.
 - **The corpus matters, and code matters most.** Against the difference between two OpenWebText files, FineWeb moves
   a typical unit 12–15× further and Python code 77–117× further. On code the residual stream's effective dimension
   stays near 25 at every layer, against up to 170 on web text.
@@ -42,7 +46,7 @@ end.
 | Errors | bootstrap over 8 shards (4 per file), resampled within each file |
 | Compute | about 3.5 min per corpus on an M4 (MPS) for the run, 1–3 min to tokenize, 10 s to export |
 
-Sections 1–5 are OpenWebText; section 6 compares the corpora.
+Sections 1–5 are OpenWebText; section 6 compares the corpora; section 7 is a 50M-token deep scan of layers 0–2.
 
 To reproduce: `source setup.sh`, then `run-atlas` (OpenWebText into `results/atlas/`),
 `run-atlas results/atlas-fineweb 1e6 fineweb`, `run-atlas results/atlas-code 1e6 code`, and `run-notebook`, which
@@ -110,8 +114,8 @@ A neuron "fires" when its post-GELU activation is above 0.
   L11/2378 (max 60, next highest 23).
 - **Rarely-firing neurons** (rate < 1e-4, fewer than about 100 of 1M tokens) number 61, 87 and 21 in layers 0–2, and
   13 across all later layers. 124 neurons never fire at all in this sample, and 109 never fire on any of the three
-  corpora (§6). With 3M tokens, "never" only bounds the rate below about 1 in 10⁶; deep scans of single units are the
-  planned way to tell rare from dead.
+  corpora (§6). With 3M tokens, "never" only bounds the rate below about 1 in 10⁶; §7 scans layers 0–2 over 50M
+  tokens to tell rare from silent.
 
 ## 4. Single units
 
@@ -228,7 +232,49 @@ Bootstrap errors are at most ±0.3.
   0.04% of OpenWebText tokens and 30% of code tokens, with its top code context on indentation; L1/1323 goes from 0.06%
   to 13%, with its top context on a run of escaped tabs (`"\t\t…"`) in a string. In the other direction, L4/961 fires on 9.4% of OpenWebText tokens and 0.01% of code tokens.
 
-## 7. Validation
+## 7. Deep scan of layers 0–2: rare and never-firing neurons
+
+The atlases see 1M tokens per corpus, too few to tell a neuron that fires once in 10⁷ tokens from one that never
+fires. The deep scan runs only layers 0–2, which hold 99 of the 109 neurons that never fired on any corpus, over
+49.6M OpenWebText tokens: 390,632 documents from files 0–7, one window each. The forward pass stops after layer 2,
+so it runs at about 22k tokens/s (38 min on an M4, plus 7 min to tokenize).
+
+It records the MLP pre-activation (`mlp.hook_pre`) rather than the post-GELU value. GELU keeps the sign, so the
+firing rate is the same, but the pre-activation also says how far a silent neuron stays from firing: its maximum over
+the scan, and the top-k contexts that come closest.
+
+    python -m atlas tokenize results/deepscan-owt --n-tokens 5e7 --files 0,1,2,3,4,5,6,7
+    python -m atlas run results/deepscan-owt --shards 16 --hooks 'blocks.[0-2].mlp.hook_pre'
+    python -m atlas export results/deepscan-owt
+
+![Firing rates in the atlas vs the deep scan, and the candidates' maximum pre-activation](figures/results_deepscan.png)
+
+| Layer | Candidates (never fired on 3 × 1M tokens) | Fire in 50M tokens | Still never fire |
+| --- | --- | --- | --- |
+| 0 | 30 | 5 | 25 |
+| 1 | 57 | 3 | 54 |
+| 2 | 12 | 2 | 10 |
+| **Total** | **99** | **10** | **89** |
+
+- **89 never fire**, which bounds their rate below 6×10⁻⁸ (3 in 50M, 95% CL). The other 10 are rare rather than
+  silent, firing 3–118 times each.
+- **How far from firing.** Over 50M tokens, 31 of the 89 never come within 1 unit of threshold. L1/242 has mean −9.6,
+  std 1.6 and max −2.6; it is as close to dead as a sample can show. Another 32 come within 0.5: L0/1382 reaches
+  −0.03, so for these "never" may only mean "rarer than 1 in 50M". For all 89, zero lies 2.9–21 standard deviations
+  above the mean pre-activation (median 6.2).
+- **Closest approaches look like features.** The contexts that come nearest to firing are specific, much like live
+  neurons' top contexts. L0/1382 peaks on "ref…" word pieces («ref»rained, «ref»old), and L2/2980 on the newline that
+  closes a quoted paragraph. Of the 10 that do fire, L0/1311 (118 times) fires on titles in lists of video games, and
+  L1/1966 (27 times) on the «MORE» link that follows an inline headline in political news ("…emergency declaration
+  «MORE» (D-Calif…").
+- **Rare neurons get enough examples.** For the 55 rare neurons in layers 0–2, the median number of firing tokens goes
+  from 7 in the 1M atlas to 526.
+- **Consistency.** Where both measure a rate well (above 0.1%), the deep scan's firing rates match the 1M atlas's:
+  median ratio 1.000, 1st–99th percentile 0.97–1.03.
+- **Silent on OpenWebText is not silent everywhere.** Two more layer 1 neurons, 1822 and 2400, never fire in the 50M
+  OpenWebText tokens, with maxima just below 0 (−0.02 and −0.01). Yet they fired on 1M tokens of code, 33 and 2 times.
+
+## 8. Validation
 
 | Check | Result |
 | --- | --- |
@@ -244,15 +290,17 @@ Bootstrap errors are at most ±0.3.
   GPT-2 never saw in training.
 - **The neuron basis.** Single neurons are often polysemantic, so a unit's top-10 contexts (as for L9/1000) may not
   name what it does. SAE bases are stage 2.
-- **Thin tails.** Rare units have fewer than about 100 examples in 1M tokens. Histograms (and so quantiles) use every
-  4th token.
+- **Thin tails.** In the 1M-token atlases, rare units have fewer than about 100 examples; the deep scan (§7) covers
+  this for layers 0–2 only. Histograms (and so quantiles) use every 4th token.
+- **Silent is not dead.** "Never fires" is always relative to a corpus and a sample size: two neurons silent on 50M
+  OpenWebText tokens fire on code (§7).
 
 ## Next
 
 From the [roadmap](atlas-design.md#roadmap):
 
-- **Deep scans of single units.** Confirm whether the 109 neurons that never fire are dead, and get more exemplars for
-  rare and code-specific units.
+- **Deep scans beyond layers 0–2 and OpenWebText.** The 10 silent candidates in layers 3–6, and code for the
+  code-specific neurons.
 - **The file-to-file term.** More files per corpus, to size it and fold it into the errors.
 - **Then stage 2:** pretrained SAE bases, behind the gate that each SAE reproduces its release's reported metrics on
   this pipeline.
