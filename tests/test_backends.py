@@ -104,3 +104,13 @@ def test_run_gives_same_atlas(models, tokens):
         # Values within rounding of a bin edge may land in the neighbouring bin.
         ca, cb = a.acc[name]["hist"].counts, b.acc[name]["hist"].counts
         assert (ca - cb).abs().sum() <= 2e-3 * cb.sum()
+
+
+def test_run_on_a_subset_stops_after_the_last_hook_reached(models, tokens):
+    # resid_pre of layer 2 is listed last but reached before layer 2's MLP: stopping there would skip the MLP hook.
+    hf, _ = models
+    toks = tokens.numpy().astype(np.uint16)
+    hooks = {"blocks.2.mlp.hook_pre": hf.cfg.d_mlp, "blocks.2.hook_resid_pre": hf.cfg.d_model}
+    a = run(hf, toks, 0, len(toks), batch_size=2, k=5, progress=False, hooks=hooks)
+    assert set(a.acc) == set(hooks)
+    assert all(a.acc[name]["moments"].n == 4 * 31 for name in hooks)

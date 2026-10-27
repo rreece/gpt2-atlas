@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 import torch
 
-from atlas import (BOS, Atlas, Covariance, Histogram, Moments, TopK, asinh_edges, bootstrap_weights, hist_mask,
-                   pooled_cov_summaries, pooled_moments, shard_ranges, spread_rows, tokenize)
+from atlas import (BOS, Atlas, default_hooks, Covariance, Histogram, Moments, TopK, asinh_edges, bootstrap_weights, hist_mask,
+                   pooled_cov_summaries, pooled_moments, select_hooks, hook_order, shard_ranges, spread_rows,
+                   tokenize)
 
 
 @pytest.fixture
@@ -151,6 +152,21 @@ def test_spread_rows_samples_across_the_file(tmp_path):
     assert len(set(rows)) == len(rows)
     assert len({r // 100 for r in rows}) == 1000 // 40  # 40 documents from each of 25 row groups, not 10 whole ones
     assert got == list(itertools.islice(spread_rows(pf, "text", n_docs=500, seed=0), 1000))  # seeded
+
+
+def test_select_hooks_and_forward_order():
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(n_layers=12, d_model=768, d_mlp=3072)
+    assert select_hooks(cfg) == default_hooks(cfg)
+    assert select_hooks(cfg, "blocks.[0-2].mlp.hook_pre") == {f"blocks.{l}.mlp.hook_pre": 3072 for l in range(3)}
+    assert select_hooks(cfg, "blocks.2.mlp.hook_pre, blocks.2.hook_resid_pre") == {
+        "blocks.2.mlp.hook_pre": 3072, "blocks.2.hook_resid_pre": 768}
+    with pytest.raises(ValueError):
+        select_hooks(cfg, "blocks.99.*")
+    # The forward pass reaches resid_pre of a layer before its MLP, and the last layer's resid_post last of all.
+    assert hook_order("blocks.2.hook_resid_pre") < hook_order("blocks.2.mlp.hook_pre") < hook_order("blocks.3.hook_resid_pre")
+    assert max(default_hooks(cfg), key=hook_order) == "blocks.11.hook_resid_post"
 
 
 def test_shard_ranges_respect_files():
