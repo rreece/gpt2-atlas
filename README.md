@@ -43,5 +43,5 @@ The steps can also run separately, e.g. shards on different machines: `python -m
     docs/vllm-monitoring-ideas-2026-10-21.txt   notes on activation monitoring in live vLLM serving (out of scope here)
 
 
-2026/10/26
+2026/10/26        
 Ryan Reece
