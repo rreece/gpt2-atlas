@@ -45,7 +45,7 @@ The pipeline is three commands over plain files: `tokenize` once, `run` per shar
 
 ![Atlas pipeline: tokenize, sharded run, export, query](figures/atlas_architecture.svg)
 
-**Data model.** A *row* is one sequence the model processes independently: BOS plus 127 consecutive tokens from one document; by default one randomly chosen window per document, from two OpenWebText files. A *pointer* is `(row, pos)`, stored as the integer `row × 128 + pos`; positions 1–127 are real tokens. Shards are row ranges, so a shard's state is self-describing and any set of non-overlapping shards merges into one atlas.
+**Data model.** A *row* is one sequence the model processes independently: BOS plus 127 consecutive tokens from one document; by default one randomly chosen window per document, from two files of the corpus (`--dataset`: OpenWebText by default, FineWeb or Python code), with documents sampled across each whole file (random row groups) because the files are not shuffled. A *pointer* is `(row, pos)`, stored as the integer `row × 128 + pos`; positions 1–127 are real tokens. Shards are row ranges, so a shard's state is self-describing and any set of non-overlapping shards merges into one atlas.
 
 **Hook points (stage 1).** MLP `hook_post` in all 12 layers (3072 units each) and the residual stream at 13 points: `hook_resid_pre` for layers 0–11 plus the final `hook_resid_post`. The forward pass stops after the last hook, so no layer past it runs. Stage 2 adds an SAE encoder inside the same hooks and writes sparse `(row, pos, layer, feature, value)` events.
 
@@ -101,7 +101,8 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 | Source | How we vary it | Applies from |
 | --- | --- | --- |
 | Statistical (finite tokens) | bootstrap over shards, resampled within each file (done: 8 shards) | stage 1 |
-| Corpus | a second OpenWebText file turned out to be a statistical replicate: different documents (none shared), same distribution, so its statistics differ no more than two halves of one file do; a real corpus systematic needs FineWeb or code | stage 1 |
+| File to file, within a corpus | OpenWebText files 0 vs 1 (done): they differ slightly beyond statistical noise (about 0.0015 of a unit's spread), which the bootstrap within files does not cover; sizing it needs more files per corpus | stage 1 |
+| Corpus | OpenWebText vs FineWeb vs Python code (done): typical per-unit shifts 12–15× the file-to-file floor for FineWeb and 77–117× for code; offset dimensions and rarely-firing neurons are the same on all three ([results](results.md#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code)) | stage 1 |
 | Context length and position | seq_len 128 vs. 512; statistics split by position bucket | stage 1 |
 | Processing convention | compatibility mode on vs. raw HF weights (affects residual statistics only) | stage 1 |
 | SAE dictionary | Bloom 24k vs. OpenAI 32k / 128k on the same layer: feature splitting and matching | stage 2 |
