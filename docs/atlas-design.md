@@ -45,7 +45,7 @@ The pipeline is three commands over plain files: `tokenize` once, `run` per shar
 
 ![Atlas pipeline: tokenize, sharded run, export, query](figures/atlas_architecture.svg)
 
-**Data model.** A *row* is one sequence the model processes independently: BOS plus 127 consecutive tokens from one document; by default one randomly chosen window per document, from two files of the corpus (`--dataset`: OpenWebText by default, FineWeb or Python code), with documents sampled across each whole file (random row groups) because the files are not shuffled. A *pointer* is `(row, pos)`, stored as the integer `row × 128 + pos`; positions 1–127 are real tokens. Shards are row ranges, so a shard's state is self-describing and any set of non-overlapping shards merges into one atlas.
+**Data model.** A *row* is one sequence the model processes independently: BOS plus 127 consecutive tokens from one document; by default one randomly chosen window per document, from eight files of the corpus (`--dataset`: OpenWebText by default, FineWeb or Python code), with documents sampled across each whole file (random row groups) because the files are not shuffled. A *pointer* is `(row, pos)`, stored as the integer `row × 128 + pos`; positions 1–127 are real tokens. Shards are row ranges, so a shard's state is self-describing and any set of non-overlapping shards merges into one atlas.
 
 **Hook points (stage 1).** MLP `hook_post` in all 12 layers (3072 units each) and the residual stream at 13 points: `hook_resid_pre` for layers 0–11 plus the final `hook_resid_post`. The forward pass stops after the last hook, so no layer past it runs. Stage 2 adds an SAE encoder inside the same hooks and writes sparse `(row, pos, layer, feature, value)` events.
 
@@ -64,7 +64,7 @@ Stage 1 is built and validated on 1M tokens, with both backends. The code lives 
 | Full 1M-token atlas, HF vs. TL backend | means, stds, quantiles agree to ~1e-5 relative; largest difference in any unit's max is 2e-4; 0.6% of top-k pointers swap among exact ties (identical left contexts) |
 | Pointers reproduce: recompute stored top-k entries from `(row, pos)` | 10 of 10 match to 5 decimals, layers 0, 9 and 11 |
 | Bottom-k for residual dimensions (added 2026-10-26) | top side of a rerun identical to the run without it; 12 of 12 sampled bottom-k entries recompute to 1e-6 relative; no change in speed |
-| Sharded run, with bootstrap over shards, merged by `export` | 7,814 rows from 7,814 documents in 8 shards (4 per OpenWebText file); errors on unit means ~0.002 of their spread (~250k effective samples), effective dimension to ±0.5 |
+| Sharded run, with bootstrap over shards and files, merged by `export` | 7,816 rows from 7,816 documents in 16 shards (2 in each of 8 OpenWebText files); total errors on unit means ~0.002 of their spread (~250k effective samples), effective dimension to ±0.5 |
 | Residual stream behaves like known GPT-2 | variance grows ~5000× from layer 0 to the final residual; dim 480 carries 7.5% of the variance at layer 1, falling to 2% by layer 7; from layer 7 to 11 no basis dimension carries more than ~2.5%; at the final residual dims 496, 430 and 36 carry 11%, 8% and 8%; effective dimension peaks at ~170 in layers 7–9 and collapses to ~7 at the final residual |
 | Neurons behave like known GPT-2 | rarely-firing neurons (firing rate < 1e-4) concentrate in layers 0–2: 62, 87, 21 |
 
@@ -100,8 +100,8 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 
 | Source | How we vary it | Applies from |
 | --- | --- | --- |
-| Statistical (finite tokens) | bootstrap over shards, resampled within each file (done: 8 shards) | stage 1 |
-| File to file, within a corpus | OpenWebText files 0 vs 1 (done): they differ slightly beyond statistical noise (about 0.0015 of a unit's spread), which the bootstrap within files does not cover; sizing it needs more files per corpus | stage 1 |
+| Statistical (finite tokens) | bootstrap over shards, resampled within each file, corrected for the few shards per file (done: 16 shards in 8 files) | stage 1 |
+| File to file, within a corpus | cluster bootstrap over files, the total error `*_err` (done: 8 OpenWebText files). The 50M-token deep scan bounds the term at about 0.0003 of a unit's spread, adding 2–6% to the error; an earlier two-file estimate overstated it 5–10× ([results](results.md#5-errors-statistical-and-file-to-file)) | stage 1 |
 | Corpus | OpenWebText vs FineWeb vs Python code (done): typical per-unit shifts 12–15× the file-to-file floor for FineWeb and 77–117× for code; offset dimensions and rarely-firing neurons are the same on all three ([results](results.md#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code)) | stage 1 |
 | Context length and position | seq_len 128 vs. 512; statistics split by position bucket | stage 1 |
 | Processing convention | compatibility mode on vs. raw HF weights (affects residual statistics only) | stage 1 |

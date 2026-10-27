@@ -6,8 +6,8 @@ Pipeline
    [n_rows, seq_len]. Each row is [BOS] followed by a (seq_len - 1)-token window of a single document.
    Windows never cross documents, and partial tail windows are dropped. By default each document
    contributes one randomly chosen window, documents are sampled across the whole of each file, and
-   rows come from two files of the corpus, so 1M tokens span ~8k documents and the two files give a
-   within-corpus replicate. `docs.npy` holds (file, doc_id, offset) for each row, doc_id being the
+   rows come from eight files of the corpus, so 1M tokens span ~8k documents and the errors can
+   include the variation from one file to the next. `docs.npy` holds (file, doc_id, offset) for each row, doc_id being the
    document's row in its Parquet file.
 2. `run`: stream rows through the model. Forward hooks reduce each batch on the device into
    mergeable accumulators (moments, histograms, top-k, and for the residual stream bottom-k and
@@ -19,7 +19,7 @@ Pipeline
    bootstrap errors (resampling shards within each file) and per-shard moments (`shards.parquet`).
 
     python -m atlas tokenize results/atlas --n-tokens 1000000          # --dataset fineweb|code for another corpus
-    python -m atlas run results/atlas --shards 8       # or --rows 0:4000 on one machine, 4000:7874 on another
+    python -m atlas run results/atlas --shards 16      # 2 per file; or --rows 0:4000 on one machine, 4000:7813 on another
     python -m atlas export results/atlas
     python -c "import duckdb; duckdb.sql(\"select * from 'results/atlas/topk.parquet' where layer = 9 and unit = 123 order by rank\").show()"
 
@@ -559,14 +559,16 @@ def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, 
 
 
 # ---------------------------------------------------------------------------------------------
-# Statistical errors: bootstrap over shards
+# Errors: bootstrap over shards and files
 #
 # Each shard is an independent sample of rows, so resampling shards with replacement and pooling
-# them gives bootstrap errors for any mergeable statistic. Shards are resampled within their
-# corpus file, so the file-to-file difference stays a separate comparison.
+# them gives bootstrap errors for any mergeable statistic. Resampling shards within their corpus
+# file gives the statistical error. Files of one corpus differ slightly beyond that noise, so the
+# total error resamples whole files instead (a cluster bootstrap). Both are corrected for the few
+# resampling units, since a bootstrap over G units underestimates the variance by (G - 1) / G.
 # Rows within a shard are correlated (neighbouring documents, shared topics); resampling whole
-# shards accounts for that, at the price of few resampling units: treat errors from 4 shards per
-# file as approximate.
+# shards and files accounts for that, at the price of few resampling units: treat errors from a
+# handful of shards and files as approximate.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -583,15 +585,35 @@ def shard_ranges(files: np.ndarray, n_shards: int) -> list[tuple[int, int]]:
     return out
 
 
-def bootstrap_weights(groups, n_boot: int = 500, seed: int = 0) -> np.ndarray:
-    """[n_boot, S]: how many times each shard appears in each resample, drawn within each group."""
+def bootstrap_weights(groups, n_boot: int = 500, seed: int = 0, resample_groups: bool = False) -> np.ndarray:
+    """[n_boot, S]: how many times each shard appears in each resample.
+
+    By default shards are resampled within each group (file): the statistical error. With resample_groups, whole
+    groups are resampled instead, each drawn group bringing all its shards (a cluster bootstrap): the total error,
+    including the variation from one file of the corpus to the next. Resampling the shards inside each drawn group
+    as well would count the within-file noise twice, since the scatter of the group means already contains it."""
     groups = np.asarray(groups)
     rng = np.random.default_rng(seed)
+    labels = np.unique(groups)
     w = np.zeros((n_boot, len(groups)))
-    for g in np.unique(groups):
+    if resample_groups:
+        copies = rng.multinomial(len(labels), np.full(len(labels), 1 / len(labels)), size=n_boot)
+        for j, g in enumerate(labels):
+            w[:, groups == g] = copies[:, [j]]
+        return w
+    for g in labels:
         idx = np.flatnonzero(groups == g)
         w[:, idx] = rng.multinomial(len(idx), np.full(len(idx), 1 / len(idx)), size=n_boot)
     return w
+
+
+def bootstrap_scale(groups, resample_groups: bool) -> float:
+    """Factor for a bootstrap std over G resampling units, sqrt(G / (G - 1)): the bootstrap variance of a mean of G
+    units is (G - 1) / G of the usual estimate, which matters with as few units as files or shards per file. G is
+    the number of groups, or with resample_groups=False the (mean) number of shards per group; NaN if below 2."""
+    groups = np.asarray(groups)
+    G = len(np.unique(groups)) if resample_groups else len(groups) / len(np.unique(groups))
+    return float(np.sqrt(G / (G - 1))) if G >= 2 else float("nan")
 
 
 def pooled_moments(w, n, mean, m2, n_pos, chunk: int = 50):
@@ -650,8 +672,12 @@ def contexts(tokens: np.ndarray, tokenizer, row: np.ndarray, pos: np.ndarray, be
 
 def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[Atlas] = (), groups=(), n_boot: int = 500):
     """Write the merged atlas. With two or more shards (and the file of each in `groups`), also write
-    bootstrap errors (`*_err` columns, resid.npz `*_err`), per-file residual summaries and the
-    per-shard moments in shards.parquet."""
+    bootstrap errors, per-file residual summaries and the per-shard moments in shards.parquet.
+
+    Errors come in two kinds, each corrected for the few resampling units (bootstrap_scale). `*_err_stat` resamples
+    shards within each file: statistical noise only. `*_err` is the total error: with 3 or more files it resamples
+    whole files (a cluster bootstrap), so it includes the variation from one file of the corpus to the next; with
+    fewer files it equals `*_err_stat`. Returns which `*_err` is."""
     import pandas as pd
 
     T = tokens.shape[1]
@@ -680,15 +706,20 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
     boot = len(shards) >= 2
     if boot:
         groups = np.asarray(groups)
-        w = bootstrap_weights(groups, n_boot)
+        w_stat = bootstrap_weights(groups, n_boot)
+        two_level = len(np.unique(groups)) >= 3
+        w = bootstrap_weights(groups, n_boot, seed=1, resample_groups=True) if two_level else w_stat
+        scale_stat = bootstrap_scale(groups, False)
+        scale = bootstrap_scale(groups, True) if two_level else scale_stat
         # [S] tokens per shard and [S, U] moments, units in the same order as `neurons`.
         n = np.array([float(sh.acc[next(iter(sh.acc))]["moments"].n) for sh in shards])
         stack = lambda f: np.stack([np.concatenate([f(sh.acc[name]["moments"]) for name in atlas.acc]) for sh in shards])
         mean, m2 = stack(lambda m: m.mean.numpy()), stack(lambda m: m.m2.numpy())
         n_pos = stack(lambda m: m.n_pos.double().numpy())
-        reps = pooled_moments(w, n, mean, m2, n_pos)
+        reps, reps_stat = pooled_moments(w, n, mean, m2, n_pos), pooled_moments(w_stat, n, mean, m2, n_pos)
         for col in ("mean", "std", "frac_pos"):
-            neurons[f"{col}_err"] = reps[col].std(0)
+            neurons[f"{col}_err"] = reps[col].std(0) * scale
+            neurons[f"{col}_err_stat"] = reps_stat[col].std(0) * scale_stat
         pd.DataFrame({
             "shard": np.repeat(np.arange(len(shards)), mean.shape[1]), "file": np.repeat(groups, mean.shape[1]),
             "hook": np.tile(neurons["hook"].to_numpy(), len(shards)), "unit": np.tile(neurons["unit"].to_numpy(), len(shards)),
@@ -705,28 +736,30 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
     np.savez(out / "histograms.npz", edges=first.edges.numpy(),
              **{name: a["hist"].counts.cpu().numpy() for name, a in atlas.acc.items()})
     if not resid:  # e.g. a deep scan of MLP hooks only
-        return
+        return err_kind(boot and two_level)
     extra = {}
     if boot:
         # Total variance and effective dimension per layer: bootstrap errors, and each file on its own.
         files = np.unique(groups)
-        keys = ["total_var_err", "pr_err"] + [f"{k}_file" for k in ("total_var", "pr", "total_var_err", "pr_err")]
+        keys = ["total_var_err", "pr_err", "total_var_err_stat", "pr_err_stat"] + \
+               [f"{k}_file" for k in ("total_var", "pr", "total_var_err", "pr_err")]
         extra = {k: [] for k in keys}
         for name in resid:
             cs = [sh.acc[name]["cov"] for sh in shards]
             args = (np.array([float(c.n) for c in cs]), np.stack([c.mean.numpy() for c in cs]), np.stack([c.c.numpy() for c in cs]))
-            t, p = pooled_cov_summaries(w, *args)
-            extra["total_var_err"].append(t.std())
-            extra["pr_err"].append(p.std())
+            for suffix, wb, sc in (("", w, scale), ("_stat", w_stat, scale_stat)):
+                t, p = pooled_cov_summaries(wb, *args)
+                extra[f"total_var_err{suffix}"].append(t.std() * sc)
+                extra[f"pr_err{suffix}"].append(p.std() * sc)
             per_file = []
             for f in files:
                 mask = (groups == f).astype(float)
                 t0, p0 = pooled_cov_summaries(mask[None], *args)
-                tb, pb = pooled_cov_summaries(w * mask, *args)  # resamples restricted to this file's shards
-                per_file.append((t0[0], p0[0], tb.std(), pb.std()))
-            for k, v in zip(keys[2:], np.array(per_file).T):
+                tb, pb = pooled_cov_summaries(w_stat * mask, *args)  # resamples restricted to this file's shards
+                per_file.append((t0[0], p0[0], tb.std() * scale_stat, pb.std() * scale_stat))
+            for k, v in zip(keys[4:], np.array(per_file).T):
                 extra[k].append(v)
-        extra = {k: np.array(v) for k, v in extra.items()} | {"files": files}
+        extra = {k: np.array(v) for k, v in extra.items()} | {"files": files, "err_kind": err_kind(two_level)}
     covs = np.stack([atlas.acc[n]["cov"].cov.numpy() for n in resid])
     tr = np.trace(covs, axis1=1, axis2=2)
     np.savez(
@@ -739,6 +772,11 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
         pr=tr**2 / (covs**2).sum((1, 2)),
         **extra,
     )
+    return err_kind(boot and two_level)
+
+
+def err_kind(two_level: bool) -> str:
+    return "files (cluster bootstrap)" if two_level else "shards within files (statistical only)"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -785,7 +823,8 @@ def main(argv=None):
     s.add_argument("--n-tokens", type=float, default=1e6)
     s.add_argument("--seq-len", type=int, default=128)
     s.add_argument("--dataset", choices=list(DATASETS), default="owt", help="owt: OpenWebText; fineweb: FineWeb sample-10BT; code: codeparrot-clean (Python)")
-    s.add_argument("--files", default="0,1", help="which Parquet files of the dataset, comma-separated; tokens are split evenly")
+    s.add_argument("--files", default="0,1,2,3,4,5,6,7", help="which Parquet files of the dataset, comma-separated; tokens are split evenly. "
+                   "Several files let export include the file-to-file variation in the errors")
     s.add_argument("--max-windows-per-doc", type=int, default=1, help="0 = every window of every document")
     s.add_argument("--seed", type=int, default=0)
     s = sub.add_parser("run", help="accumulate statistics over a row range -> state-<start>-<stop>.pt")
@@ -864,8 +903,10 @@ def main(argv=None):
         files = row_files(args.dir)
         groups = [files[a] if files[a] == files[b - 1] else -1 for a, b in ranges]  # -1: a shard spanning files
         tokens = np.load(args.dir / "tokens.npy", mmap_mode="r")
-        export(atlas, tokens, load_tokenizer(), args.dir, shards if len(shards) > 1 else (), groups)
+        kind = export(atlas, tokens, load_tokenizer(), args.dir, shards if len(shards) > 1 else (), groups)
         print(f"merged {len(paths)} state(s), {atlas.n_rows:,} rows, ranges {ranges} -> {args.dir}")
+        if len(paths) > 1:
+            print(f"*_err columns: {kind}" + ("" if "cluster" in kind else "; use 3 or more files for errors that include the file-to-file term"))
 
 
 if __name__ == "__main__":

@@ -6,30 +6,30 @@
 ## Summary
 
 A first look at what GPT-2 small does over 1M OpenWebText tokens, from the stage 1 atlas: statistics for all 36,864
-MLP neurons and 9,984 residual-stream dimensions (13 hook points × 768), with bootstrap errors over 8 shards. The same
-atlas on 1M tokens each of FineWeb and Python code measures how much of it depends on the corpus.
+MLP neurons and 9,984 residual-stream dimensions (13 hook points × 768), with bootstrap errors over 16 shards in 8
+files. The same atlas on 1M tokens each of FineWeb and Python code measures how much of it depends on the corpus, and a
+50M-token deep scan of layers 0–2 separates rare neurons from silent ones.
 
-- **The residual stream grows and then collapses.** Its total variance grows about 4900× from the embedding to the
+- **The residual stream grows and then collapses.** Its total variance grows about 4800× from the embedding to the
   final residual. Its effective dimension rises from 14 to about 170 in layers 7–9, then collapses to about 7 at the
-  final residual, where the top principal component alone carries 35% of the variance.
+  final residual, where the top principal component alone carries 34% of the variance.
 - **A few residual dimensions are constant offsets.** Dimensions 64, 266, 326, 373, 447 and 481 sit many standard
   deviations away from zero on almost every token. The covariance view subtracts the mean, so it does not see them.
   They are the same dimensions on all three corpora.
-- **Rarely-firing MLP neurons live in layers 0–2** (169 of the 182 neurons that fire on fewer than 1 in 10⁴ tokens),
+- **Rarely-firing MLP neurons live in layers 0–2** (170 of the 183 neurons that fire on fewer than 1 in 10⁴ tokens),
   and they are mostly the same neurons on every corpus. Layer 1's median neuron fires on 29% of tokens, at least twice
   as often as any other layer's.
-- **89 neurons in layers 0–2 never fire in 50M tokens.** A deep scan of layers 0–2 over 50M OpenWebText tokens checked
-  the 99 there that never fired on 3 × 1M tokens: 10 are merely rare, and 89 stay silent (rate below 6×10⁻⁸). About a
-  third of those stay well below threshold, the closest thing to dead neurons a sample can show; another third come
-  within 0.5 of firing.
-- **The corpus matters, and code matters most.** Against the difference between two OpenWebText files, FineWeb moves
-  a typical unit 12–15× further and Python code 77–117× further. On code the residual stream's effective dimension
-  stays near 25 at every layer, against up to 170 on web text.
-- **Errors are small, but files differ slightly.** A unit's mean is known to about 0.002 of its spread. Two files of
-  the same corpus differ a little more than statistical noise, so the bootstrap over shards understates the error
-  from one file to the next.
+- **89 neurons in layers 0–2 never fire in 50M tokens.** The deep scan checked the 100 there that never fired on
+  3 × 1M tokens: 11 are merely rare, and 89 stay silent (rate below 6×10⁻⁸). About a third of those stay well below
+  threshold, the closest thing to dead neurons a sample can show; another third come within 0.5 of firing.
+- **The corpus matters, and code matters most.** Against the difference between two halves of OpenWebText, FineWeb
+  moves a typical unit 14–18× further and Python code 85–133× further. On code the residual stream's effective
+  dimension stays near 25 at every layer, against up to 170 on web text.
+- **Errors are small, and files of one corpus are near replicates.** A unit's mean is known to about 0.002 of its
+  spread. The errors now include the variation from one file of the corpus to the next, which the deep scan bounds at
+  about 0.0003 of a unit's spread; it adds only 2–6% to the error.
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
-  1e-6 relative.
+  2e-6 relative.
 
 These are initial results: 128-token windows, three corpora and the neuron basis only. The caveats are listed at the
 end.
@@ -39,18 +39,19 @@ end.
 | | |
 | --- | --- |
 | Model | GPT-2 small, TransformerLens processed convention (folded LayerNorm, centered writing weights) |
-| Data | 7,814 rows from 7,814 documents (one random 127-token window each), from two files of the corpus, with documents sampled across each whole file |
-| Corpora | OpenWebText (default; files 0 and 1), FineWeb sample-10BT (files 0 and 1), codeparrot-clean Python (files 0 and 1); revisions pinned in each `manifest.json` |
-| Tokens | 992,378 per unit; position 0 (BOS) excluded from all statistics |
+| Data | 1M tokens per corpus, one random 127-token window per document, with documents sampled across each whole file |
+| Corpora | OpenWebText (default): 7,816 rows, 977 from each of files 0–7. FineWeb sample-10BT and codeparrot-clean (Python): 7,814 rows from files 0 and 1. Revisions pinned in each `manifest.json` |
+| Tokens | 992,632 per unit for OpenWebText; position 0 (BOS) excluded from all statistics |
 | Hooks | MLP `hook_post` in layers 0–11; residual stream before each layer and after the last ("layer 12") |
-| Errors | bootstrap over 8 shards (4 per file), resampled within each file |
-| Compute | about 3.5 min per corpus on an M4 (MPS) for the run, 1–3 min to tokenize, 10 s to export |
+| Errors | bootstrap over 16 shards in 8 files: resampling files (total error) or shards within files (statistical), see §5 |
+| Compute | about 4 min per corpus on an M4 (MPS) for the run, 1–3 min to tokenize, about 3.5 min to export (two bootstraps over 16 shards) |
 
 Sections 1–5 are OpenWebText; section 6 compares the corpora; section 7 is a 50M-token deep scan of layers 0–2.
 
 To reproduce: `source setup.sh`, then `run-atlas` (OpenWebText into `results/atlas/`),
-`run-atlas results/atlas-fineweb 1e6 fineweb`, `run-atlas results/atlas-code 1e6 code`, and `run-notebook`, which
-runs `notebooks/atlas.ipynb` headless, in place, and writes every figure here into `docs/figures/`.
+`run-atlas results/atlas-fineweb 1e6 fineweb`, `run-atlas results/atlas-code 1e6 code`, the deep scan in §7, and
+`run-notebook`, which runs `notebooks/atlas.ipynb` headless, in place, and writes every figure here into
+`docs/figures/`. The FineWeb and code atlases here were built with 2 files, before the default became 8.
 
 ## 1. Residual-stream geometry
 
@@ -59,18 +60,18 @@ runs `notebooks/atlas.ipynb` headless, in place, and writes every figure here in
 | Layer | Total variance | Effective dimension | PCs for 90% of variance | Largest basis dimension (share) |
 | --- | --- | --- | --- | --- |
 | 0 | 11.6 ± 0.0 | 14.3 ± 0.0 | 411 | 479 (2%) |
-| 1 | 1,033 ± 1 | 31.1 ± 0.0 | 314 | 480 (7.5%) |
-| 4 | 2,156 ± 1 | 103.9 ± 0.1 | 424 | 480 (4%) |
-| 8 | 5,866 ± 2 | 169.8 ± 0.3 | 500 | 447 (2%) |
-| 9 | 8,114 ± 2 | 170.8 ± 0.2 | 507 | 447 (2%) |
-| 11 | 19,089 ± 12 | 103.0 ± 0.3 | 510 | 496 (2.5%) |
-| 12 (final) | 56,611 ± 165 | 6.7 ± 0.0 | 345 | 496 (10.5%) |
+| 1 | 1,033 ± 1 | 31.2 ± 0.0 | 314 | 480 (7.5%) |
+| 4 | 2,157 ± 1 | 104.0 ± 0.1 | 424 | 480 (4%) |
+| 8 | 5,861 ± 4 | 170.7 ± 0.3 | 500 | 447 (2%) |
+| 9 | 8,109 ± 7 | 171.8 ± 0.3 | 507 | 447 (2%) |
+| 11 | 19,070 ± 21 | 104.1 ± 0.5 | 510 | 496 (2.5%) |
+| 12 (final) | 56,097 ± 199 | 6.8 ± 0.0 | 348 | 496 (10.5%) |
 
-The effective dimension is the participation ratio (Σλ)²/Σλ² of the covariance eigenvalues. Errors are bootstrap
-over shards. The notebook prints every layer.
+The effective dimension is the participation ratio (Σλ)²/Σλ² of the covariance eigenvalues. Errors are the total
+bootstrap error (§5). The notebook prints every layer.
 
 - **Variance.** The first block multiplies the variance by 89 (layer 0 is the embedding alone). After that it grows
-  steadily, by 55× from layer 1 to the final residual, with the last block alone contributing 3.0×.
+  steadily, by 54× from layer 1 to the final residual, with the last block alone contributing 2.9×.
 - **Effective dimension.** It rises through the middle layers, where the variance is spread most evenly (the top PC
   carries only 4% at layer 8), then collapses in the last two blocks. At the final residual a handful of directions
   dominate, which is what `ln_final` and the unembedding then read.
@@ -85,16 +86,17 @@ residual dimensions by |mean| / std picks out a small, stable set:
 
 | Dimension | Layer 1 | Layer 6 | Layer 11 | Layer 12 (final) |
 | --- | --- | --- | --- | --- |
-| 64 | −23.7 ± 2.0 | −27.2 ± 2.2 | −28.1 ± 2.2 | −118.7 ± 35.4 |
-| 373 | −16.2 ± 4.0 | −21.3 ± 4.6 | −93.7 ± 18.0 | −142.9 ± 39.4 |
-| 447 | 17.3 ± 4.4 | 32.0 ± 8.0 | 89.3 ± 17.8 | 127.4 ± 39.1 |
+| 64 | −23.7 ± 2.0 | −27.2 ± 2.2 | −28.1 ± 2.2 | −118.9 ± 35.2 |
+| 373 | −16.2 ± 4.0 | −21.3 ± 4.6 | −93.8 ± 17.9 | −143.0 ± 39.1 |
+| 447 | 17.3 ± 4.4 | 32.0 ± 8.0 | 89.4 ± 17.6 | 127.5 ± 38.8 |
 | 266 | 11.3 ± 2.5 | 11.7 ± 2.4 | 11.9 ± 2.7 | — |
 | 326 | 9.3 ± 1.7 | 10.5 ± 2.4 | — | — |
-| 481 | — | — | 92.7 ± 18.9 | 133.2 ± 39.0 |
+| 481 | — | — | 92.8 ± 18.8 | 133.3 ± 38.7 |
 
 Entries are mean ± standard deviation over tokens (not errors on the mean), and "—" means |mean| < 3 std at that
-layer. In all, 78 (layer, dimension) pairs pass |mean| > 3 std: 15 small ones at layer 0, the six dimensions in the table
-(481 only from the later layers), dimension 101 at layer 1 only, and dimensions 87 and 480 at the final residual only.
+layer. In all, 79 (layer, dimension) pairs pass |mean| > 3 std: 16 small ones at layer 0, the six dimensions in the
+table (481 only from the later layers), dimension 101 at layer 1 only, and dimensions 87 and 480 at the final residual
+only.
 
 Dimensions 64, 266 and 326 are switched on by the first block and then barely change. Dimensions 373, 447 and 481 grow
 steadily with depth. This resembles the outlier ("massive activation") dimensions reported for GPT-2 and other
@@ -111,9 +113,9 @@ A neuron "fires" when its post-GELU activation is above 0.
 - **Firing rates.** Layer 1 is the outlier: its median neuron fires on 29% of tokens, against 6–14% in every other
   layer. From layer 4 on the median rises slowly, from about 9–10% to 14%.
 - **Peak activations** climb through the last layers. The five highest-peak neurons are all in layers 10–11, led by
-  L11/2378 (max 60, next highest 23).
-- **Rarely-firing neurons** (rate < 1e-4, fewer than about 100 of 1M tokens) number 61, 87 and 21 in layers 0–2, and
-  13 across all later layers. 124 neurons never fire at all in this sample, and 109 never fire on any of the three
+  L11/2378 (max 57, next highest 24).
+- **Rarely-firing neurons** (rate < 1e-4, fewer than about 100 of 1M tokens) number 62, 87 and 21 in layers 0–2, and
+  13 across all later layers. 122 neurons never fire at all in this sample, and 110 never fire on any of the three
   corpora (§6). With 3M tokens, "never" only bounds the rate below about 1 in 10⁶; §7 scans layers 0–2 over 50M
   tokens to tell rare from silent.
 
@@ -122,16 +124,16 @@ A neuron "fires" when its post-GELU activation is above 0.
 The atlas keeps each unit's histogram and its top-20 exemplars as `(row, pos)` pointers, decoded here with the token
 marked «like this». Residual dimensions are signed, so they also keep bottom-20.
 
-**L11/2378, the highest-peak neuron.** It fires on 6.0% of tokens. Every top-10 context is the first newline of a
-blank line «⏎»⏎ at the end of a paragraph or list item, often closing a quote. Above zero the histogram has two bumps,
-a broad one near 10 and a sharper one near 35–40.
+**L11/2378, the highest-peak neuron.** It fires on 5.8% of tokens. Every top-10 context is the first newline of a
+blank line «⏎»⏎ at the end of a paragraph or list item, usually closing a quote. Above zero the histogram has two
+bumps, a broad one near 10 and a sharper one near 35–40.
 
 ![Histogram of L11 neuron 2378](figures/results_neuron_l11_peak.png)
 
-**L9/1000, a typical mid-depth neuron.** It fires on 7.9% of tokens and peaks at 2.9. Its top contexts mix
-determiners and pronouns in set phrases ("of «my» choosing", "one of «a» number", "one-of-a«-»kind") with ages and
-ordinals ("a woman in «her» mid thirties", "2«nd»"). Ten exemplars are not enough to name what it does. Its histogram
-is in [figures/results_neuron_l9_1000.png](figures/results_neuron_l9_1000.png).
+**L9/1000, a typical mid-depth neuron.** It fires on 7.9% of tokens and peaks at 3.2. Its top contexts are mostly
+determiners and pronouns in set phrases: "one of «a» number", "the first of «a» string of attacks", "of «their»
+choice", "on «the» recommendation". Ten exemplars are not enough to name what it does. Its histogram is in
+[figures/results_neuron_l9_1000.png](figures/results_neuron_l9_1000.png).
 
 **Residual dimension 447 at layer 9, both extremes.** This is one of the offset dimensions from §2 (mean 49, std 12),
 positive on 99.9% of tokens.
@@ -140,47 +142,63 @@ positive on 99.9% of tokens.
 
 | Side | Value | Context |
 | --- | --- | --- |
-| top | 101.6 | …The FBI stated that «Polic»arpio became enraged… |
-| top | 97.5 | …official policies or procedures for the use of «Theft»Track… |
-| top | 97.2 | …Although «Chat»Secure's Facebook and… |
-| top | 95.7 | What if «Spotify» made a Podcast App |
-| bottom | −30.0 | …December 2016 November 2016 October «2016» September 2016 August 2016… |
-| bottom | −28.9 | …November 2016 October 2016 September «2016» August 2016 July 2016… |
-| bottom | −27.0 | …December 2017 November 2017 October 2017 September «2017» August 2017… |
+| top | 104.2 | …In nutshell, «Su»ave complements Azure… |
+| top | 100.5 | …By default, «Retro»fit does the JSON… |
+| top | 99.2 | …This probably means «Hus»k will combine its… |
+| top | 98.7 | …returning to nostalgic locations. «Cron»o snickered… |
+| bottom | −29.8 | …get three actions in your «inbox» every week. |
+| bottom | −22.7 | …Absorb 20 dragon souls⏎⏎21.1%⏎⏎«Rare» 30.43% |
+| bottom | −21.1 | …pic.twitter.com«/»w3tp4… |
+| bottom | −19.1 | …You must select a newsletter to subscribe to. «Sign» Up… |
 
 The largest values fall on the first token of a capitalized name or an unfamiliar product word, often the first of
-several BPE pieces. All ten most negative fall on the year in long "Month Year" archive lists. The bottom side only
-exists because of the bottom-k added in this round: top-k alone shows half the picture for a signed unit.
+several BPE pieces. The most negative fall in boilerplate and list text: newsletter sign-up lines, URL paths, a stats
+table. The bottom side only exists because of the bottom-k added in this round: top-k alone shows half the picture for
+a signed unit.
 
-## 5. Statistical errors and a within-corpus check
+## 5. Errors: statistical and file to file
 
-| Median bootstrap error | MLP neurons | Residual dimensions |
+`export` gives two bootstrap errors on every unit's statistics and on each layer's total variance and effective
+dimension:
+
+- **`*_err_stat`**, the statistical error, resamples the 16 shards within each of the 8 files.
+- **`*_err`**, the total error, resamples whole files instead (a cluster bootstrap), so it also covers the variation
+  from one file of the corpus to the next.
+
+Both are corrected for the few resampling units. A bootstrap over G units underestimates the variance by (G − 1)/G,
+which with 2 shards per file would make the statistical error √2 too small.
+
+| Median error | MLP neurons: total / stat | Residual dims: total / stat |
 | --- | --- | --- |
-| on the mean, in units of std | 0.0017 | 0.0019 |
-| on the std, relative | 0.0044 | 0.0010 |
-| on the firing rate, relative | 0.0053 | — |
+| on the mean, in units of std | 0.0021 / 0.0021 | 0.0025 / 0.0024 |
+| on the std, relative | 0.0054 / 0.0053 | 0.0012 / 0.0011 |
+| on the firing rate, relative | 0.0068 / 0.0065 | — |
 
 An error of 0.002 std on a mean corresponds to roughly 250k effective samples out of 1M tokens: tokens within one
 document, and documents within one shard, are correlated.
 
-![Cross-file vs within-file differences](figures/results_corpus_check.png)
+![File-to-file variance vs noise, and total vs statistical error](figures/results_corpus_check.png)
 
-The plots compare each unit's difference between OpenWebText files 0 and 1 (solid) with its difference between two
-halves of the same file (dashed, scaled by 1/√2 to match the data size). The files differ slightly *more* than the
-halves do: the ratio is 1.12–1.14 in the median and 1.10–1.12 at the 99th percentile. A per-unit z-test on the shard
-means agrees. The file-vs-file z-scores have variance 1.8–2.0, against 1.3–1.4 for a control split that mixes the two
-files and 1.5 expected from noise alone. The files share no documents, and the difference is small (about 0.0015 of a
-unit's spread, a twentieth of the FineWeb shift in §6), but it is real. The two files' effective dimensions agree
-within 0.5 at every layer.
+**The file-to-file term is real but small.** For each unit, the variance of its 8 file means can be compared with the
+variance expected from noise alone, estimated from the scatter of each file's 2 shards; with no file effect their
+ratio follows F(7, 8), median 0.99.
 
-Two consequences:
+- **In the 1M atlas** the median ratio is 1.06–1.08, but each file holds under 1k documents, so a file mean carries
+  noise of about 0.005 of a unit's spread and the term is poorly resolved. All 36k units also share the same 8 files,
+  so they are not independent tests.
+- **The 50M-token deep scan (§7)** reads about half of the documents in the same 8 files, so its file means are close
+  to the files' true means. There the file-to-file std is about 0.0003 of a unit's spread for means (median ratio
+  1.12) and 0.0001 for firing rates (1.03).
+- **Effect on the errors.** The total error exceeds the statistical error by 2–6% at both 1M and 50M tokens. At a
+  much larger scale per file the file term would grow in relative weight, which `*_err` would then capture.
 
-- **Errors.** The bootstrap resamples shards within each file, so it covers statistical noise but not the variation
-  from one file of the corpus to the next. For claims at the 0.002-std level, that file-to-file term should be added.
-- **An earlier conclusion was wrong.** On the first version of this atlas, which read the first few thousand documents
-  of each file, the files looked like pure statistical replicates. Most likely, consecutive documents are correlated,
-  which inflated the shard-to-shard scatter and hid the difference. Documents are now sampled across each whole file (random row
-  groups), and the difference shows.
+**Two corrections to earlier versions of these results.**
+
+- **Errors were about 13% too small.** Earlier errors used 4 shards per file without the small-sample correction.
+- **The file difference was overstated.** An earlier version reported that OpenWebText files 0 and 1 differ by about
+  0.0015 of a unit's spread. That came from a single pair of files, one realization shared by every unit, and the
+  deep scan shows the true file-to-file term is 5–10× smaller. The files are statistical replicates to this
+  precision.
 
 ## 6. Corpus systematic: OpenWebText vs FineWeb vs Python code
 
@@ -190,52 +208,53 @@ web text like OpenWebText but a different selection) and Python code (codeparrot
 ![Per-unit shifts of each corpus against OpenWebText](figures/results_corpus_units.png)
 
 Each curve is the distribution, over units, of a unit's shift from OpenWebText: |Δ mean| in units of its spread on
-OpenWebText, or for firing rates the |log₁₀ ratio|. The dashed curve is the within-OpenWebText floor from §5 (file 0
-vs file 1, scaled to full-size samples).
+OpenWebText, or for firing rates the |log₁₀ ratio|. The dashed curve is a within-OpenWebText floor: the same shift
+between files 0–3 and files 4–7, scaled by 1/√2 to full-size samples.
 
 | Median shift | FineWeb | Python code | Within-OpenWebText floor |
 | --- | --- | --- | --- |
-| MLP neurons: mean, in units of std | 0.028 (12×) | 0.172 (77×) | 0.0022 |
-| Residual dims: mean, in units of std | 0.037 (14×) | 0.263 (102×) | 0.0026 |
-| MLP neurons: \|log₁₀ firing-rate ratio\| | 0.044 (15×) | 0.335 (117×) | 0.0029 |
+| MLP neurons: mean, in units of std | 0.028 (14×) | 0.172 (85×) | 0.0020 |
+| Residual dims: mean, in units of std | 0.037 (16×) | 0.263 (113×) | 0.0023 |
+| MLP neurons: \|log₁₀ firing-rate ratio\| | 0.045 (18×) | 0.335 (133×) | 0.0025 |
 
 ![Per-layer summaries by corpus](figures/results_corpus_layers.png)
 
 | Layer | Effective dimension: OpenWebText | FineWeb | Python code |
 | --- | --- | --- | --- |
-| 1 | 31.1 | 31.4 | 14.2 |
-| 4 | 103.9 | 105.7 | 19.1 |
-| 9 | 170.8 | 183.4 | 27.1 |
-| 11 | 103.0 | 120.3 | 24.6 |
-| 12 (final) | 6.7 | 12.1 | 2.5 |
+| 1 | 31.2 | 31.4 | 14.2 |
+| 4 | 104.0 | 105.7 | 19.1 |
+| 9 | 171.8 | 183.4 | 27.1 |
+| 11 | 104.1 | 120.3 | 24.6 |
+| 12 (final) | 6.8 | 12.1 | 2.5 |
 
-Bootstrap errors are at most ±0.3.
+Bootstrap errors are at most ±0.5.
 
 - **FineWeb** follows OpenWebText closely in shape but sits clearly above the floor. Its effective dimension is higher
-  from about layer 6 on, and its total variance at the final residual is 24% lower. Firing rates per layer are almost
+  from about layer 6 on, and its total variance at the final residual is 23% lower. Firing rates per layer are almost
   identical.
 - **Code** differs from the first block on:
   - Its effective dimension stays near 25 at every layer, and at the final residual the top PC carries 61% of the
-    variance (35% for OpenWebText).
+    variance (34% for OpenWebText).
   - Its neurons fire less: the median is 5–7% after layer 1, and 21% in layer 1.
-  - Its total variance at the final residual is 42% higher.
+  - Its total variance at the final residual is 43% higher.
 
   A likely cause is code's token statistics. 37% of its tokens are pure whitespace (indentation), against 2–4% for web
   text, and its ten most common token types cover half of all tokens, against about a quarter. That would let a few
   directions carry much of the variance, but the atlas alone does not prove it.
 - **What does not depend on the corpus.**
   - The same residual dimensions are offsets on all three corpora, with similar means through layer 11: FineWeb
-    within 4% of OpenWebText and code within 4–17%, except dimension 326 (up to 14% and 70% larger).
-  - The rarely-firing neurons are mostly the same neurons: 168 are rare on every corpus, and 109 never fire on any.
+    within 4% of OpenWebText and code within 4–17%, except dimension 326 (up to 14% and 69% larger).
+  - The rarely-firing neurons are mostly the same neurons: 168 are rare on every corpus, and 110 never fire on any.
   - Layer 1 is the high-firing layer on all three.
 - **Code-specific neurons.** A few early neurons are nearly silent on web text and fire on code. L0/2469 fires on
   0.04% of OpenWebText tokens and 30% of code tokens, with its top code context on indentation; L1/1323 goes from 0.06%
-  to 13%, with its top context on a run of escaped tabs (`"\t\t…"`) in a string. In the other direction, L4/961 fires on 9.4% of OpenWebText tokens and 0.01% of code tokens.
+  to 13%, with its top context on a run of escaped tabs (`"\t\t…"`) in a string. In the other direction, L4/961 fires
+  on 9.6% of OpenWebText tokens and 0.01% of code tokens.
 
 ## 7. Deep scan of layers 0–2: rare and never-firing neurons
 
 The atlases see 1M tokens per corpus, too few to tell a neuron that fires once in 10⁷ tokens from one that never
-fires. The deep scan runs only layers 0–2, which hold 99 of the 109 neurons that never fired on any corpus, over
+fires. The deep scan runs only layers 0–2, which hold 100 of the 110 neurons that never fired on any corpus, over
 49.6M OpenWebText tokens: 390,632 documents from files 0–7, one window each. The forward pass stops after layer 2,
 so it runs at about 22k tokens/s (38 min on an M4, plus 7 min to tokenize).
 
@@ -251,26 +270,26 @@ the scan, and the top-k contexts that come closest.
 
 | Layer | Candidates (never fired on 3 × 1M tokens) | Fire in 50M tokens | Still never fire |
 | --- | --- | --- | --- |
-| 0 | 30 | 5 | 25 |
-| 1 | 57 | 3 | 54 |
-| 2 | 12 | 2 | 10 |
-| **Total** | **99** | **10** | **89** |
+| 0 | 29 | 4 | 25 |
+| 1 | 58 | 4 | 54 |
+| 2 | 13 | 3 | 10 |
+| **Total** | **100** | **11** | **89** |
 
-- **89 never fire**, which bounds their rate below 6×10⁻⁸ (3 in 50M, 95% CL). The other 10 are rare rather than
-  silent, firing 3–118 times each.
+- **89 never fire**, which bounds their rate below 6×10⁻⁸ (3 in 50M, 95% CL). The other 11 are rare rather than
+  silent, firing 2–39 times each.
 - **How far from firing.** Over 50M tokens, 31 of the 89 never come within 1 unit of threshold. L1/242 has mean −9.6,
   std 1.6 and max −2.6; it is as close to dead as a sample can show. Another 32 come within 0.5: L0/1382 reaches
   −0.03, so for these "never" may only mean "rarer than 1 in 50M". For all 89, zero lies 2.9–21 standard deviations
   above the mean pre-activation (median 6.2).
 - **Closest approaches look like features.** The contexts that come nearest to firing are specific, much like live
   neurons' top contexts. L0/1382 peaks on "ref…" word pieces («ref»rained, «ref»old), and L2/2980 on the newline that
-  closes a quoted paragraph. Of the 10 that do fire, L0/1311 (118 times) fires on titles in lists of video games, and
-  L1/1966 (27 times) on the «MORE» link that follows an inline headline in political news ("…emergency declaration
-  «MORE» (D-Calif…").
-- **Rare neurons get enough examples.** For the 55 rare neurons in layers 0–2, the median number of firing tokens goes
-  from 7 in the 1M atlas to 526.
+  closes a quoted paragraph. Of the 11 that do fire, L0/2206 (39 times) fires on «hub» and «Mac» in place names and
+  product names ("tourist «hub»", "Vegan Cheddar «Mac» & Cheese"), and L1/1966 (27 times) on the «MORE» link that
+  follows an inline headline in political news ("…emergency declaration «MORE» on Tuesday…").
+- **Rare neurons get enough examples.** For the 58 rare neurons in layers 0–2, the median number of firing tokens goes
+  from 10 in the 1M atlas to 512.
 - **Consistency.** Where both measure a rate well (above 0.1%), the deep scan's firing rates match the 1M atlas's:
-  median ratio 1.000, 1st–99th percentile 0.97–1.03.
+  median ratio 1.000, 1st–99th percentile 0.97–1.03. The deep scan also measures the file-to-file term (§5).
 - **Silent on OpenWebText is not silent everywhere.** Two more layer 1 neurons, 1822 and 2400, never fire in the 50M
   OpenWebText tokens, with maxima just below 0 (−0.02 and −0.01). Yet they fired on 1M tokens of code, 33 and 2 times.
 
@@ -278,14 +297,15 @@ the scan, and the top-k contexts that come closest.
 
 | Check | Result |
 | --- | --- |
-| Pointers reproduce: 12 random top- and bottom-k entries recomputed from `(row, pos)` | all match, worst relative difference 1.4e-6 |
-| Exact merging and sampling: unit tests for every accumulator (split vs. whole, including bottom-k) and for sampling across a file | 40 of 40 pass |
-| Plain HF backend vs. TransformerLens bridge | agree within 2e-5 of the activation scale at every hook (see design doc) |
+| Pointers reproduce: 12 random top- and bottom-k entries recomputed from `(row, pos)` | all match, worst relative difference 2.1e-6 |
+| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k), sampling across a file, hook selection, the file-level bootstrap | 43 of 43 pass |
+| Plain HF backend vs. TransformerLens bridge | agree within 2e-5 of the activation scale at every hook (see design doc); a run over a subset of hooks stops only after the last one reached |
 
 ## Caveats
 
-- **Two files per corpus.** Files of one corpus differ slightly (§5), and with two files per corpus the size of that
-  file-to-file term is only roughly known.
+- **Few files for the other corpora.** The FineWeb and code atlases use 2 files each, so their errors are statistical
+  only. On OpenWebText the file term adds only a few percent, but FineWeb (crawl dumps) and code (repositories) may
+  vary more from file to file.
 - **Short context.** Only positions 1–127 of 128-token windows are covered. Rows start mid-document after a BOS, which
   GPT-2 never saw in training.
 - **The neuron basis.** Single neurons are often polysemantic, so a unit's top-10 contexts (as for L9/1000) may not
@@ -299,8 +319,8 @@ the scan, and the top-k contexts that come closest.
 
 From the [roadmap](atlas-design.md#roadmap):
 
-- **Deep scans beyond layers 0–2 and OpenWebText.** The 10 silent candidates in layers 3–6, and code for the
+- **Context length and position:** `seq_len` 128 vs 512, and statistics by position bucket.
+- **Deep scans beyond layers 0–2 and OpenWebText:** the 10 silent candidates in layers 3–6, and code for the
   code-specific neurons.
-- **The file-to-file term.** More files per corpus, to size it and fold it into the errors.
 - **Then stage 2:** pretrained SAE bases, behind the gate that each SAE reproduces its release's reported metrics on
   this pipeline.

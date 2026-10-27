@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from atlas import (BOS, Atlas, default_hooks, Covariance, Histogram, Moments, TopK, asinh_edges, bootstrap_weights, hist_mask,
-                   pooled_cov_summaries, pooled_moments, select_hooks, hook_order, shard_ranges, spread_rows,
+                   pooled_cov_summaries, pooled_moments, select_hooks, bootstrap_scale, hook_order, shard_ranges, spread_rows,
                    tokenize)
 
 
@@ -179,6 +179,22 @@ def test_shard_ranges_respect_files():
 def test_bootstrap_weights_resample_within_groups():
     w = bootstrap_weights([0, 0, 0, 1, 1], n_boot=200)
     assert (w[:, :3].sum(1) == 3).all() and (w[:, 3:].sum(1) == 2).all()
+
+
+def test_bootstrap_weights_resample_whole_files():
+    groups = np.repeat([0, 1, 2, 3], 2)  # 4 files of 2 shards
+    w = bootstrap_weights(groups, n_boot=4000, resample_groups=True)
+    assert (w.sum(1) == 8).all() and (w[:, 0::2] == w[:, 1::2]).all()  # each drawn file brings both its shards
+    assert (w == 0).any() and (w >= 2).any()  # files are resampled, unlike the within-file bootstrap
+    # A statistic that differs only between files: resampling files sees its spread, resampling shards within files
+    # doesn't. With the small-sample correction the bootstrap std of the mean is the usual s / sqrt(G).
+    value = np.repeat([0.0, 1.0, 2.0, 3.0], 2)
+    within = bootstrap_weights(groups, n_boot=4000)
+    assert np.allclose((within @ value) / 8, 1.5)
+    std = ((w @ value) / 8).std() * bootstrap_scale(groups, True)
+    np.testing.assert_allclose(std, np.std([0, 1, 2, 3], ddof=1) / 2, rtol=0.05)
+    assert bootstrap_scale(groups, False) == pytest.approx(np.sqrt(2))  # 2 shards per file
+
 
 
 def test_pooled_moments_and_cov_match_exact_merge(x):

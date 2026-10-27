@@ -9,6 +9,6 @@ set -euo pipefail
 dir="${1:-${PROJECT_PATH}/results/atlas}"
 n_tokens="${2:-1e6}"
 dataset="${3:-owt}"
-python -m atlas tokenize "${dir}" --n-tokens "${n_tokens}" --dataset "${dataset}"  # 2 files, 1 window per document
-python -m atlas run "${dir}" --shards 8                                           # 4 shards per file, for bootstrap errors
+python -m atlas tokenize "${dir}" --n-tokens "${n_tokens}" --dataset "${dataset}"  # 8 files, 1 window per document
+python -m atlas run "${dir}" --shards 16                                          # 2 shards per file, for bootstrap errors
 python -m atlas export "${dir}"
