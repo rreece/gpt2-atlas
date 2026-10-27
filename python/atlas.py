@@ -124,7 +124,7 @@ def tokenize(texts, tokenizer, n_tokens: int, seq_len: int = 128, max_windows_pe
             if max_windows_per_doc and len(offs) > max_windows_per_doc:
                 offs = sorted(int(o) for o in rng.choice(offs, max_windows_per_doc, replace=False))
             for off in offs:
-                rows.append([BOS] + ids[off : off + w])
+                rows.append(np.array([BOS] + ids[off : off + w], dtype=np.uint16))  # compact: 50M tokens as lists is ~2 GB
                 docs.append((doc_id, off))
                 if len(rows) == n_rows:
                     return np.array(rows, dtype=np.uint16), np.array(docs, dtype=np.int64)
@@ -334,6 +334,32 @@ def default_hooks(cfg) -> dict[str, int]:
     return hooks
 
 
+# Hook points within a block, in the order the forward pass reaches them.
+BLOCK_HOOKS = ["hook_resid_pre", "hook_attn_out", "hook_resid_mid", "mlp.hook_pre", "mlp.hook_post", "hook_mlp_out",
+               "hook_resid_post"]
+
+
+def select_hooks(cfg, patterns: str | None = None) -> dict[str, int]:
+    """Hook name -> width for every hook point matching any of the comma-separated fnmatch `patterns`, e.g.
+    "blocks.[0-2].mlp.hook_pre"; None gives default_hooks."""
+    import fnmatch
+
+    if patterns is None:
+        return default_hooks(cfg)
+    width = lambda h: cfg.d_mlp if h.startswith("mlp.") else cfg.d_model
+    offered = {f"blocks.{l}.{h}": width(h) for l in range(cfg.n_layers) for h in BLOCK_HOOKS}
+    hooks = {n: d for n, d in offered.items() if any(fnmatch.fnmatchcase(n, p.strip()) for p in patterns.split(","))}
+    if not hooks:
+        raise ValueError(f"no hook matches {patterns!r}")
+    return hooks
+
+
+def hook_order(name: str) -> tuple[int, int]:
+    """Where the forward pass reaches a hook: (layer, position within the block)."""
+    _, layer, rest = name.split(".", 2)
+    return int(layer), BLOCK_HOOKS.index(rest)
+
+
 def hook_layer(name: str) -> int:
     """Layer index of a hook. resid_post of layer l is resid_pre of layer l + 1."""
     l = int(name.split(".")[1])
@@ -502,12 +528,13 @@ BACKENDS = {"hf": HFGPT2, "tl": TLGPT2}
 
 
 def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, k: int = 20, hist_stride: int = 1,
-        device="cpu", progress=True) -> Atlas:
+        device="cpu", progress=True, hooks: dict[str, int] | None = None) -> Atlas:
+    """Accumulate rows start:stop at `hooks` (default_hooks if None). The forward pass stops after the last of them."""
     from tqdm.auto import tqdm
 
-    hooks = default_hooks(model.cfg)
+    hooks = hooks or default_hooks(model.cfg)
     atlas = Atlas(hooks, k=k, hist_stride=hist_stride, device=device)
-    last = list(hooks)[-1]
+    last = max(hooks, key=hook_order)  # the last one reached, not the last one listed
     T = tokens.shape[1]
     pos = torch.arange(1, T, device=device)
     index = None
@@ -674,6 +701,11 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
 
     resid = [name for name in atlas.acc if "cov" in atlas.acc[name]]
     resid.sort(key=hook_layer)
+    first = next(iter(atlas.acc.values()))["hist"]
+    np.savez(out / "histograms.npz", edges=first.edges.numpy(),
+             **{name: a["hist"].counts.cpu().numpy() for name, a in atlas.acc.items()})
+    if not resid:  # e.g. a deep scan of MLP hooks only
+        return
     extra = {}
     if boot:
         # Total variance and effective dimension per layer: bootstrap errors, and each file on its own.
@@ -707,9 +739,6 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
         pr=tr**2 / (covs**2).sum((1, 2)),
         **extra,
     )
-    first = next(iter(atlas.acc.values()))["hist"]
-    np.savez(out / "histograms.npz", edges=first.edges.numpy(),
-             **{name: a["hist"].counts.cpu().numpy() for name, a in atlas.acc.items()})
 
 
 # ---------------------------------------------------------------------------------------------
@@ -768,6 +797,7 @@ def main(argv=None):
     s.add_argument("--hist-stride", type=int, default=4, help="histograms (quantiles) use every Nth token; 1 = all")
     s.add_argument("--device", default=default_device())
     s.add_argument("--backend", choices=list(BACKENDS), default="hf", help="hf: plain transformers (fast); tl: TransformerLens bridge (reference)")
+    s.add_argument("--hooks", help="comma-separated fnmatch patterns over hook names, e.g. 'blocks.[0-2].mlp.hook_pre' (default: MLP hook_post in every layer and the residual stream)")
     s = sub.add_parser("export", help="merge state-*.pt -> parquet + npz")
     s.add_argument("dir", type=Path)
     args = p.parse_args(argv)
@@ -808,7 +838,8 @@ def main(argv=None):
         model = load_model(args.device, args.backend)
         for start, stop in ranges:
             t0 = time.time()
-            atlas = run(model, tokens, start, stop, args.batch_size, args.k, args.hist_stride, args.device, progress=len(ranges) == 1)
+            atlas = run(model, tokens, start, stop, args.batch_size, args.k, args.hist_stride, args.device,
+                        progress=len(ranges) == 1, hooks=select_hooks(model.cfg, args.hooks))
             dt = time.time() - t0
             state = atlas.state() | {"rows": (start, stop), "model": "gpt2", "backend": args.backend,
                                      "git_commit": git_commit(), "torch": str(torch.__version__), "seconds": dt}

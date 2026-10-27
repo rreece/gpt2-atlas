@@ -82,7 +82,7 @@ Tokenizing takes about 1 min and export 9 s with either backend.
 **Known limitations**
 
 - The accumulators still cost about as much as the forward pass (full run ~5,150 vs ~9,700 tok/s forward-only on an M4): top-k and histograms each read every MLP activation. Histograms use every 4th token, which shifts quantiles by a median 0.02 std at p99 (0.13 std for the worst 1% of units). Further speed belongs on CUDA.
-- Exemplars now span ~8k documents (one window each), but rare units (firing rate < 1e-4) still have fewer than ~100 examples; deep scans of single units are the planned fix.
+- Exemplars now span ~8k documents (one window each), but in the 1M-token atlases rare units (firing rate < 1e-4) still have fewer than ~100 examples. A deep scan (`run --hooks`) fixes this per hook: layers 0–2 over 50M tokens gives the rare neurons there a median of 526 examples and bounds 89 silent neurons below 6×10⁻⁸ ([results](results.md#7-deep-scan-of-layers-02-rare-and-never-firing-neurons)). Later layers and other corpora are not scanned yet.
 - Statistics cover positions 1–127 only. Behaviour that depends on long context is not seen.
 - Rows start mid-document after a BOS, which GPT-2 never saw in training (its windows started mid-document without BOS).
 
