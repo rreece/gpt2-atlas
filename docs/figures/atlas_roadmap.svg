@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 536" role="img" aria-label="Stage 1 is done; finish it at laptop scale before adding SAE bases" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <style>
+    .ink { fill: #141413; }
+    .quiet { fill: #5e5d59; }
+    .edge { stroke: #c3c1b8; }
+    .edge-fill { fill: #c3c1b8; }
+    .good { fill: #1a9e1a; stroke: #1a9e1a; }
+    .accent { fill: #2f74d0; stroke: #2f74d0; }
+    .small { font-size: 11.5px; }
+    .bold { font-weight: 600; }
+    @media (prefers-color-scheme: dark) {
+      .ink { fill: #ececea; }
+      .quiet { fill: #a8a69e; }
+      .edge { stroke: #6b6a65; }
+      .edge-fill { fill: #6b6a65; }
+      .good { fill: #4cc04c; stroke: #4cc04c; }
+      .accent { fill: #5b9cf0; stroke: #5b9cf0; }
+    }
+  </style>
+  <defs>
+    <marker id="road-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" class="edge-fill"/>
+    </marker>
+  </defs>
+
+  <text x="24" y="34" font-size="15" class="ink bold">Stage 1 is done; finish it at laptop scale before adding SAE bases</text>
+
+  <g fill="none" stroke-width="1.25" class="edge">
+    <path d="M60 128V146"/>
+    <path d="M60 166V184" marker-end="url(#road-arrow)"/>
+    <path d="M60 256V274"/>
+    <path d="M60 294V312" marker-end="url(#road-arrow)"/>
+    <path d="M60 384V402"/>
+    <path d="M60 422V440" marker-end="url(#road-arrow)"/>
+  </g>
+
+  <!-- Stage 1 -->
+  <rect x="24" y="56" width="712" height="72" rx="8" fill-opacity="0.12" stroke-width="2" class="good"/>
+  <text x="40" y="80" class="ink bold">Stage 1 · Neuron basis</text>
+  <text x="720" y="80" text-anchor="end" class="ink bold small">done</text>
+  <text x="40" y="100" class="ink small">Streaming moments, histograms, top-k and residual covariance for every MLP neuron and residual dimension.</text>
+  <text x="40" y="116" class="quiet small">Validated on 1M OpenWebText tokens on an M4: exact two-shard merge, pointers reproduce on recompute.</text>
+
+  <polygon points="50,156 60,146 70,156 60,166" stroke-width="1.25" class="good"/>
+  <text x="84" y="160" class="quiet small">Gate passed: merge-exactness tests and pointer recompute</text>
+
+  <!-- Stage 1b -->
+  <rect x="24" y="184" width="712" height="72" rx="8" fill-opacity="0.12" stroke-width="2" class="accent"/>
+  <text x="40" y="208" class="ink bold">Stage 1b · Harden at laptop scale</text>
+  <text x="720" y="208" text-anchor="end" class="ink bold small">in progress</text>
+  <text x="40" y="228" class="ink small">Done: accumulators tuned (+61%), exploration notebook, one window per document, bootstrap errors over 8 shards.</text>
+  <text x="40" y="244" class="quiet small">Next: bottom-k for residual dims, deep scans of single units, a real corpus systematic (FineWeb or code).</text>
+
+  <polygon points="50,284 60,274 70,284 60,294" fill="none" stroke-width="1.25" class="edge"/>
+  <text x="84" y="288" class="quiet small">Gate: each SAE reproduces its release's variance explained, CE loss recovered and L0 on our pipeline</text>
+
+  <!-- Stage 2 -->
+  <rect x="24" y="312" width="712" height="72" rx="8" fill="none" stroke-width="1.25" class="edge"/>
+  <text x="40" y="336" class="ink bold">Stage 2 · Pretrained SAE bases</text>
+  <text x="720" y="336" text-anchor="end" class="quiet small">planned</text>
+  <text x="40" y="356" class="ink small">SAELens residual SAEs (Bloom 24k, OpenAI 32k / 128k) in the same hooks; sparse feature events to Parquet.</text>
+  <text x="40" y="372" class="quiet small">Compare features with neurons; test whether features track the IOI circuit and its Hydra repair.</text>
+
+  <polygon points="50,412 60,402 70,412 60,422" fill="none" stroke-width="1.25" class="edge"/>
+  <text x="84" y="416" class="quiet small">Gate: a question pretrained dictionaries cannot answer</text>
+
+  <!-- Stage 3 -->
+  <rect x="24" y="440" width="712" height="72" rx="8" fill="none" stroke-width="1.25" class="edge"/>
+  <text x="40" y="464" class="ink bold">Stage 3 · Train our own SAEs</text>
+  <text x="720" y="464" text-anchor="end" class="quiet small">only if needed</text>
+  <text x="40" y="484" class="ink small">For an uncovered hook point (e.g. per-head hook_z), a different corpus, or dictionary-seed systematics.</text>
+  <text x="40" y="500" class="quiet small">A few hundred million tokens per layer; hours on one GPU with SAELens.</text>
+</svg>

@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 576" role="img" aria-label="Shards reduce on the device; everything not stored is recomputed from tokens" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <style>
+    .ink { fill: #141413; }
+    .quiet { fill: #5e5d59; }
+    .edge { stroke: #c3c1b8; }
+    .edge-fill { fill: #c3c1b8; }
+    .accent { fill: #2f74d0; stroke: #2f74d0; }
+    .box { fill: none; stroke-width: 1.25; }
+    .small { font-size: 11.5px; }
+    .bold { font-weight: 600; }
+    @media (prefers-color-scheme: dark) {
+      .ink { fill: #ececea; }
+      .quiet { fill: #a8a69e; }
+      .edge { stroke: #6b6a65; }
+      .edge-fill { fill: #6b6a65; }
+      .accent { fill: #5b9cf0; stroke: #5b9cf0; }
+    }
+  </style>
+  <defs>
+    <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" class="edge-fill"/>
+    </marker>
+  </defs>
+
+  <text x="24" y="34" font-size="15" class="ink bold">Shards reduce on the device; everything not stored is recomputed from tokens</text>
+
+  <g fill="none" stroke-width="1.25" class="edge">
+    <path d="M224 100H280" marker-end="url(#arch-arrow)"/>
+    <path d="M480 100H536" marker-end="url(#arch-arrow)"/>
+    <path d="M636 136V176" marker-end="url(#arch-arrow)"/>
+    <path d="M184 296V336" marker-end="url(#arch-arrow)"/>
+    <path d="M344 372H400" marker-end="url(#arch-arrow)"/>
+    <path d="M568 440V480" marker-end="url(#arch-arrow)"/>
+    <path d="M400 516H304" stroke-dasharray="4 4" marker-end="url(#arch-arrow)"/>
+  </g>
+
+  <!-- Row 1: corpus to tokens -->
+  <rect x="24" y="64" width="200" height="72" rx="8" class="box edge"/>
+  <text x="40" y="88" class="ink bold">OpenWebText</text>
+  <text x="40" y="108" class="quiet small">80 Parquet files on HF</text>
+  <text x="40" y="124" class="quiet small">~100M tokens each</text>
+
+  <rect x="280" y="64" width="200" height="72" rx="8" class="box edge"/>
+  <text x="296" y="88" class="ink bold">tokenize</text>
+  <text x="296" y="108" class="quiet small">BOS + 127-token window</text>
+  <text x="296" y="124" class="quiet small">of one document per row</text>
+
+  <rect x="536" y="64" width="200" height="72" rx="8" class="box edge"/>
+  <text x="552" y="88" class="ink bold">tokens.npy + docs.npy</text>
+  <text x="552" y="108" class="quiet small">uint16 [rows, 128]</text>
+  <text x="552" y="124" class="quiet small">(doc_id, offset) per row</text>
+
+  <!-- Row 2: sharded run -->
+  <rect x="24" y="176" width="712" height="120" rx="8" fill-opacity="0.08" stroke-width="2" class="accent"/>
+  <text x="40" y="198" class="ink bold">run · hooks reduce each batch on the device; raw activations never leave it</text>
+
+  <rect x="40" y="208" width="216" height="72" rx="8" class="box edge"/>
+  <text x="56" y="232" class="ink bold">shard 0 · rows 0:4000</text>
+  <text x="56" y="252" class="quiet small">writes state-0-4000.pt</text>
+  <text x="56" y="268" class="quiet small">stats merged on CPU in fp64</text>
+
+  <rect x="272" y="208" width="216" height="72" rx="8" class="box edge"/>
+  <text x="288" y="232" class="ink bold">shard 1 · rows 4000:7813</text>
+  <text x="288" y="252" class="quiet small">writes state-4000-7813.pt</text>
+  <text x="288" y="268" class="quiet small">same code, any machine</text>
+
+  <rect x="504" y="208" width="216" height="72" rx="8" class="box edge"/>
+  <text x="520" y="232" class="ink bold">shard N · more rows</text>
+  <text x="520" y="252" class="quiet small">one process per GPU</text>
+  <text x="520" y="268" class="quiet small">no communication between shards</text>
+
+  <!-- Row 3: export and outputs -->
+  <rect x="24" y="336" width="320" height="72" rx="8" class="box edge"/>
+  <text x="40" y="360" class="ink bold">export</text>
+  <text x="40" y="380" class="quiet small">merges all state-*.pt exactly</text>
+  <text x="40" y="396" class="quiet small">refuses overlapping row ranges</text>
+
+  <rect x="400" y="336" width="336" height="104" rx="8" class="box edge"/>
+  <text x="416" y="360" class="ink bold">outputs (plain files)</text>
+  <text x="416" y="380" class="quiet small">neurons.parquet · mean, std, max, quantiles</text>
+  <text x="416" y="396" class="quiet small">topk.parquet · (row, pos) pointers + context</text>
+  <text x="416" y="412" class="quiet small">resid.npz · mean and covariance per layer</text>
+  <text x="416" y="428" class="quiet small">histograms.npz · fixed asinh bins per unit</text>
+
+  <!-- Row 4: recompute and query -->
+  <rect x="24" y="480" width="280" height="72" rx="8" class="box edge"/>
+  <text x="40" y="504" class="ink bold">recompute on demand</text>
+  <text x="40" y="524" class="quiet small">rerun any row from tokens.npy</text>
+  <text x="40" y="540" class="quiet small">for activations the atlas doesn't store</text>
+
+  <text x="352" y="508" text-anchor="middle" class="quiet small">(row, pos)</text>
+
+  <rect x="400" y="480" width="336" height="72" rx="8" class="box edge"/>
+  <text x="416" y="504" class="ink bold">query · DuckDB, pandas, notebooks</text>
+  <text x="416" y="524" class="quiet small">top contexts per unit, firing rates</text>
+  <text x="416" y="540" class="quiet small">PCA from covariance, outlier dimensions</text>
+</svg>

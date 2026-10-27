@@ -5,8 +5,7 @@ per-unit statistics, top-activating contexts with decoded text, and residual-str
 errors. Built around streaming, exactly mergeable reductions, so it never stores raw activations, and kept
 laptop-sized: 1M OpenWebText tokens from ~8k documents in about 5 minutes on an M4.
 
-**Design: [docs/atlas-design.md](docs/atlas-design.md)** (living version:
-[Claude Doc](https://claude.ai/artifact/4UKoy7XmiR5BfQKNthvETu)).
+**Design: [docs/atlas-design.md](docs/atlas-design.md)**
 
 Grew out of [ioi-hydra](https://github.com/rreece/ioi-hydra), a one-day study of self-repair in GPT-2 small's
 IOI circuit; moved here on 2026-10-26.
