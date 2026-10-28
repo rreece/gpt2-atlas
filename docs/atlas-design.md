@@ -88,7 +88,7 @@ Tokenizing takes about 1 min and export 9 s with either backend.
 
 ## Roadmap
 
-The next step is finishing stage 1 at laptop scale, not adding SAEs: the pipeline is basis-independent, so anything fixed now carries over to every dictionary later.
+Stage 1 is finished at laptop scale: every stage 1 systematic in the table below is measured ([results](results.md)). The next step is the gate into stage 2, checking that a pretrained SAE reproduces its release's numbers on this pipeline. The pipeline is basis-independent, so everything fixed in stage 1 carries over to every dictionary.
 
 ![Atlas roadmap: 4 stages, 3 gates](figures/atlas_roadmap.svg)
 
@@ -104,7 +104,7 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 | File to file, within a corpus | cluster bootstrap over files, the total error `*_err` (done: 8 OpenWebText files). The 50M-token deep scan bounds the term at about 0.0003 of a unit's spread, adding 2–6% to the error; an earlier two-file estimate overstated it 5–10× ([results](results.md#5-errors-statistical-and-file-to-file)) | stage 1 |
 | Corpus | OpenWebText vs FineWeb vs Python code (done): typical per-unit shifts 12–15× the file-to-file floor for FineWeb and 77–117× for code; offset dimensions and rarely-firing neurons are the same on all three ([results](results.md#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code)) | stage 1 |
 | Context length and position | 512-token windows with statistics per position bucket (done: `run --positions`). Position matters most in the first ~16 positions; later positions and long documents differ little ([results](results.md#8-position-and-context-length)). Covariance within each position is still open | stage 1 |
-| Processing convention | compatibility mode on vs. raw HF weights (affects residual statistics only) | stage 1 |
+| Centering the residual stream | centered (TransformerLens processed convention) vs. raw HF residuals, the only part of weight processing the atlas sees (done: `--backend hf-raw`). Negligible for GPT-2 small: the all-ones direction holds at most 0.1% of the variance, and MLP activations are identical ([results](results.md#9-dependence-on-centering-the-residual-stream)) | stage 1 |
 | SAE dictionary | Bloom 24k vs. OpenAI 32k / 128k on the same layer: feature splitting and matching | stage 2 |
 | SAE reconstruction error | report the unexplained variance ("dark matter") beside every feature-level claim | stage 2 |
 | SAE seed | two trainings differing only in seed | stage 3 |

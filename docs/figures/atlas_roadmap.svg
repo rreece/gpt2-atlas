@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 536" role="img" aria-label="Stage 1 is done; finish it at laptop scale before adding SAE bases" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 536" role="img" aria-label="Stage 1 is done at laptop scale; next, the gate into SAE bases" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
   <style>
     .bg { fill: #ffffff; }
     .ink { fill: #141413; }
@@ -17,7 +17,7 @@
   </defs>
   <rect width="760" height="536" rx="12" class="bg"/>
 
-  <text x="24" y="34" font-size="15" class="ink bold">Stage 1 is done; finish it at laptop scale before adding SAE bases</text>
+  <text x="24" y="34" font-size="15" class="ink bold">Stage 1 is done at laptop scale; next, the gate into SAE bases</text>
 
   <g fill="none" stroke-width="1.25" class="edge">
     <path d="M60 128V146"/>
@@ -39,19 +39,19 @@
   <text x="84" y="160" class="quiet small">Gate passed: merge-exactness tests and pointer recompute</text>
 
   <!-- Stage 1b -->
-  <rect x="24" y="184" width="712" height="72" rx="8" fill-opacity="0.12" stroke-width="2" class="accent"/>
+  <rect x="24" y="184" width="712" height="72" rx="8" fill-opacity="0.12" stroke-width="2" class="good"/>
   <text x="40" y="208" class="ink bold">Stage 1b · Harden at laptop scale</text>
-  <text x="720" y="208" text-anchor="end" class="ink bold small">in progress</text>
-  <text x="40" y="228" class="ink small">Done: corpus systematic, deep scan of layers 0–2, file-to-file errors, position and context length.</text>
-  <text x="40" y="244" class="quiet small">Next: processing convention (raw HF vs TransformerLens weights); covariance within each position.</text>
+  <text x="720" y="208" text-anchor="end" class="ink bold small">done</text>
+  <text x="40" y="228" class="ink small">Done: corpus systematic, deep scan of layers 0–2, file-to-file errors, position, residual centering.</text>
+  <text x="40" y="244" class="quiet small">Follow-ups: covariance within each position; deep scans of layers 3–6 and of code.</text>
 
-  <polygon points="50,284 60,274 70,284 60,294" fill="none" stroke-width="1.25" class="edge"/>
-  <text x="84" y="288" class="quiet small">Gate: each SAE reproduces its release's variance explained, CE loss recovered and L0 on our pipeline</text>
+  <polygon points="50,284 60,274 70,284 60,294" stroke-width="1.25" class="accent"/>
+  <text x="84" y="288" class="ink small">Next gate: each SAE reproduces its release's variance explained, CE loss recovered and L0 on our pipeline</text>
 
   <!-- Stage 2 -->
-  <rect x="24" y="312" width="712" height="72" rx="8" fill="none" stroke-width="1.25" class="edge"/>
+  <rect x="24" y="312" width="712" height="72" rx="8" fill-opacity="0.12" stroke-width="2" class="accent"/>
   <text x="40" y="336" class="ink bold">Stage 2 · Pretrained SAE bases</text>
-  <text x="720" y="336" text-anchor="end" class="quiet small">planned</text>
+  <text x="720" y="336" text-anchor="end" class="ink bold small">next</text>
   <text x="40" y="356" class="ink small">SAELens residual SAEs (Bloom 24k, OpenAI 32k / 128k) in the same hooks; sparse feature events to Parquet.</text>
   <text x="40" y="372" class="quiet small">Compare features with neurons; test whether features track the IOI circuit and its Hydra repair.</text>
 
