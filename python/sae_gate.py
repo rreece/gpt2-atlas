@@ -164,6 +164,26 @@ def tl_check(sae, layer: int, toks: torch.Tensor, ours: HFGPT2) -> dict:
             "tl_ce_mean_tl": float(ce_tl.mean())}
 
 
+def neuronpedia_features(source: str, indices, cache: Path, model: str = "gpt2-small", pause: float = 0.3) -> dict:
+    """Neuronpedia's record of each feature (density `frac_nonzero`, `maxActApprox`, top `activations`, explanations),
+    for an independent check of single features. `source` is Neuronpedia's id for the SAE, e.g. "9-res-jb". Each record
+    is fetched once from the public API and cached as JSON under `cache`, so reruns need no network."""
+    import urllib.request
+
+    cache = Path(cache) / model / source
+    cache.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for i in map(int, indices):
+        path = cache / f"{i}.json"
+        if not path.exists():
+            url = f"https://www.neuronpedia.org/api/feature/{model}/{source}/{i}"
+            with urllib.request.urlopen(url, timeout=60) as r:
+                path.write_bytes(r.read())
+            time.sleep(pause)  # be polite to the public API
+        out[i] = json.loads(path.read_text())
+    return out
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="sae_gate", description=__doc__.split("\n\n")[0])
     p.add_argument("atlas", type=Path, help="an atlas directory: its tokens.npy and docs.npy are used")

@@ -18,7 +18,8 @@
 - [9. Dependence on centering the residual stream](#9-dependence-on-centering-the-residual-stream)
 - [10. Systematic uncertainties](#10-systematic-uncertainties)
 - [11. The gate into stage 2](#11-the-gate-into-stage-2)
-- [12. Validation](#12-validation)
+- [12. Stage 2: the atlas in the SAE basis](#12-stage-2-the-atlas-in-the-sae-basis)
+- [13. Validation](#13-validation)
 - [Caveats](#caveats)
 - [Next](#next)
 
@@ -56,6 +57,8 @@ the last processing convention.
   convention only along the all-ones direction, which carries at most 0.1% of the variance; MLP neurons are identical.
 - **The gate into stage 2 passes.** Bloom's pretrained residual SAEs reproduce their release's L0, alive features,
   variance explained and CE loss on this pipeline, and our activations match TransformerLens's to 10⁻⁶.
+- **Stage 2 has begun.** At layers 6 and 9 the SAE features are now atlas units, with sparse per-token events at layer 9.
+  Single features match Neuronpedia's dashboards, and the SAE's decoder bias is the residual stream's mean.
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
   2e-6 relative.
 
@@ -460,7 +463,8 @@ X has mean m" should carry its statistical error and its conditions, "on OpenWeb
 
 - **Context beyond 511 tokens.** GPT-2 goes to 1024.
 - **The row layout.** Rows put a BOS before a window that starts mid-document, unlike GPT-2's training windows; that
-  may be part of why the first positions look special.
+  may be part of why the first positions look special. One consequence is now seen: features that fire on document
+  boundaries (a mid-prompt `<|endoftext|>`) never fire here (§12).
 - **Covariance within each position.** Effective dimension by position (§8) is only qualitative so far.
 - **Everything SAE-specific.** The choice of dictionary, and the reconstruction error ("dark matter"), are stage 2.
 
@@ -531,10 +535,56 @@ Two differences, both understood:
 With the gate passed, stage 2 can use these SAEs on this pipeline: feature atlases in the SAE basis, with the same
 accumulators.
 
-## 12. Validation
+## 12. Stage 2: the atlas in the SAE basis
+
+With the gate passed, the gate-validated SAEs encode the residual stream inside the hooks, and their 24,576 features at
+layers 6 and 9 become ordinary atlas units (`kind = "sae"`): firing rate, moments, histogram and top-20 contexts, on
+the same 1M tokens as the default atlas, so features and neurons can be compared token for token. At layer 9 every
+nonzero activation is also kept as a sparse event (`events-L9-*.parquet`: row, pos, feature, value), 71.5M of them
+(454 MB), for per-token queries such as the IOI analysis to come.
+
+    mkdir -p results/atlas-sae && cp results/atlas/{tokens.npy,docs.npy,manifest.json} results/atlas-sae/
+    python -m atlas run results/atlas-sae --shards 16 --batch-size 32 --hooks 'blocks.6.hook_resid_pre,blocks.9.hook_resid_pre' \
+        --sae gpt2-small-res-jb --sae-layers 6,9 --sae-events 9
+    python -m atlas export results/atlas-sae
+
+The run stops after layer 9, so it takes about 5 minutes on an M4 (3,600 tokens/s), plus the export.
+
+![Feature firing rates against neurons, and single features against Neuronpedia](figures/results_sae_features.png)
+
+| Layer | Features | Never fire (1M tokens) | Firing rate: 10% / median / 90% | Fire on > 1% of tokens | L0 | Median MLP neuron firing rate |
+| --- | --- | --- | --- | --- | --- | --- |
+| 6 | 24,576 | 13 | 0.018% / 0.055% / 0.55% | 1,043 | 50.7 | 10.2% |
+| 9 | 24,576 | 3 | 0.035% / 0.14% / 0.75% | 1,494 | 72.1 | 10.5% |
+
+- **Features are sparse, neurons are not.** The median feature fires about 75× (layer 9) to 185× (layer 6) less often
+  than the median MLP neuron at the same layer, and almost no feature is dead over 1M tokens.
+- **Single features match Neuronpedia.** Neuronpedia hosts dashboards for these SAEs, built from OpenWebText with
+  128-token prompts. For 50 live features per layer, evenly spaced through our firing-rate distribution (records
+  fetched once from its public API and cached under `results/neuronpedia/`):
+  - firing rates agree to a median ratio of 1.02 (layer 6) and 1.00 (layer 9), the middle two-thirds within about ±10%;
+  - maximum activations to a median ratio of 0.97, slightly lower here because we see 1M tokens against its 3.1M;
+  - its top-10 activating tokens are among our top-20 for a median of 100% of them, and 88–94% of features share at
+    least one.
+- **One outlier is a document-boundary feature.** L6/6819 fires on 5 of our 1M tokens (max 0.7) but on 0.13% of
+  Neuronpedia's (max 60), always on an `<|endoftext|>` in the middle of a prompt, where one document ends and the next
+  begins. Neuronpedia's prompts concatenate documents; our rows hold one document window after a BOS, which is
+  excluded, so such features have nothing to fire on here. This is a first measured consequence of the row-layout
+  systematic (§10): features tied to document boundaries are invisible in this atlas, 1 of the 100 sampled. The other
+  outlier, L9/21059, is about equally rare in both (rates of 10⁻⁶ and 3×10⁻⁷).
+- **The decoder bias is the residual stream's mean.** cos(b_dec, mean) is 0.993 (layer 6) and 0.994 (layer 9), and
+  the offset dimensions of §2 agree within a few percent (dimension 447 at layer 9: mean 49.3, b_dec 51.3). The SAE
+  stores the constant offsets in its bias, which is why its variance explained about the origin runs so far above the
+  centered value (§11).
+- **The examples read as features.** L9/11770 fires on the token "Fun" ("Func", "Funtenna", "Fun fact") and L9/23599
+  on the unit in "over the last five years / three decades", matching Neuronpedia's explanations. The densest feature,
+  L9/7155 (11% of tokens), fires on conjunctions and punctuation in our top contexts, which Neuronpedia's label
+  ("dates and months") does not obviously describe.
+
+## 13. Validation
 
 Checks that the atlas computes what it claims, grouped by what they check against. The notebook reruns the first
-group's checks and the calibration test with every run (notebook §10); the unit tests are in `tests/`.
+group's checks and the calibration test with every run (notebook §11); the unit tests are in `tests/`.
 
 **Exactness and internal consistency**
 
@@ -544,7 +594,8 @@ group's checks and the calibration test with every run (notebook §10); the unit
 | Position buckets pool back to the whole: each unit's buckets in the 512-token atlas (§8), merged, against its overall moments | counts equal; means agree to 1e-7 of a unit's spread, stds to 7e-7 relative, firing rates exactly |
 | Deep scan vs the 1M atlas (§7): firing rates on different data, same code | median ratio 1.000, 1st–99th percentile 0.97–1.03 |
 | Centering identity (§9): raw minus centered total variance against the variance along the all-ones direction | equal at every layer, as the decomposition requires |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook | 47 of 47 pass |
+| SAE feature events vs feature moments (§12): events per feature against firing counts, accumulated independently | equal for every layer-9 feature; 72.05 events per token, equal to L0 |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run | 48 of 48 pass |
 
 **Cross-implementation**
 
@@ -559,6 +610,7 @@ group's checks and the calibration test with every run (notebook §10); the unit
 | Check | Result |
 | --- | --- |
 | Bloom's `gpt2-small-res-jb` SAEs vs the release post (§11) | L0 within 2.4%, alive features within 0.7 points, variance explained about the origin within 0.7 points, CE increase within the rounding of the post's clean CE |
+| Single SAE features vs Neuronpedia's dashboards (§12), 50 per layer | firing rates within a median ratio of 1.00–1.02, maxima 0.97, top tokens shared for a median 100%; the one outlier is a document-boundary feature |
 | Known features of GPT-2 small's residual stream (§1, §2) | outlier dimensions (480 early, 447 in the middle layers, 496 at the final residual) and large constant offsets, consistent with the outlier ("massive activation") dimensions reported for GPT-2 |
 
 **Statistical calibration**
@@ -595,8 +647,11 @@ group's checks and the calibration test with every run (notebook §10); the unit
 
 ## Next
 
-Every stage 1 systematic is now measured, and the gate into stage 2 passes. From the [roadmap](atlas-design.md#roadmap):
+Every stage 1 systematic is now measured, the gate into stage 2 passes, and the feature atlas has begun. From the [roadmap](atlas-design.md#roadmap):
 
-- **Stage 2:** feature atlases in the SAE basis, with the same accumulators, now that the gate has passed (§11).
+- **Stage 2, step 2:** do features at layers 9–11 change under name-mover ablation the way ioi-hydra's head-level
+  Hydra accounting predicts? The layer-9 events (§12) are the starting point.
+- **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
+  feature basis.
 - **Follow-ups for stage 1:** a covariance within each position, to separate token content from position spread
   (§8); deep scans of the 10 silent candidates in layers 3–6, and of code for the code-specific neurons.

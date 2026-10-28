@@ -150,3 +150,27 @@ def test_resid_pre_patch_identity_and_zero_ablation(models, tokens):
     finally:
         h.remove()
     assert (zero.mean() - clean.mean()).abs() > 0.5
+
+
+def test_run_with_sae_features_and_events(models, tokens):
+    """Stage 2: an SAE on resid_pre turns its features into atlas units, and events record every nonzero activation."""
+    from types import SimpleNamespace
+
+    hf, _ = models
+    g = torch.Generator().manual_seed(0)
+    W = torch.randn(hf.cfg.d_model, 64, generator=g) / 10
+    sae = SimpleNamespace(cfg=SimpleNamespace(d_sae=64), encode=lambda x: torch.relu(x @ W - 1.0))
+    toks = tokens.numpy().astype(np.uint16)
+    hooks = {"blocks.2.hook_resid_pre": hf.cfg.d_model}
+    a = run(hf, toks, 0, len(toks), batch_size=2, k=3, progress=False, hooks=hooks, saes={2: sae}, events=(2,))
+    name = "blocks.2.hook_resid_pre.sae"
+    assert set(a.acc) == set(hooks) | {name} and a.acc[name]["moments"].n == 4 * 31
+    # Events are exactly the nonzero activations, at the right (row, pos).
+    acts = capture(hf, tokens, ["blocks.2.hook_resid_pre"])["blocks.2.hook_resid_pre"]
+    feats = sae.encode(acts)[:, 1:]
+    idx = np.concatenate([c[0] for c in a.events[2]])
+    feat = np.concatenate([c[1] for c in a.events[2]])
+    val = np.concatenate([c[2] for c in a.events[2]])
+    assert len(idx) == int((feats != 0).sum()) == int(a.acc[name]["moments"].n_pos.sum())
+    T = toks.shape[1]
+    np.testing.assert_allclose(val, feats[idx // T, idx % T - 1, feat].numpy(), rtol=1e-4, atol=1e-5)
