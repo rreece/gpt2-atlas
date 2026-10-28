@@ -174,3 +174,28 @@ def test_run_with_sae_features_and_events(models, tokens):
     assert len(idx) == int((feats != 0).sum()) == int(a.acc[name]["moments"].n_pos.sum())
     T = toks.shape[1]
     np.testing.assert_allclose(val, feats[idx // T, idx % T - 1, feat].numpy(), rtol=1e-4, atol=1e-5)
+
+
+def test_heads_read_and_ablated_at_c_proj_match_processed_transformerlens(models, tokens):
+    """IOI analysis (python/ioi.py): a head's output read at attn.c_proj, with the folded value bias removed, is
+    processed TransformerLens's hook_z, and zero-ablating it there changes the losses exactly as zeroing hook_z does.
+    (Processed HookedTransformer, the convention of ioi-hydra's head-level results.)"""
+    from transformer_lens import HookedTransformer
+
+    from ioi import ablate_heads, capture_z
+    from sae_gate import next_token_ce
+
+    hf, _ = models
+    ht = HookedTransformer.from_pretrained("gpt2", device="cpu")
+    _, cache = ht.run_with_cache(tokens, names_filter="blocks.9.attn.hook_z")
+    torch.testing.assert_close(capture_z(hf, tokens, [9])[9], cache["blocks.9.attn.hook_z"].flatten(-2), rtol=1e-4, atol=1e-4)
+
+    def zero_9_6(x, hook):
+        x[:, :, 6] = 0.0
+        return x
+
+    with ablate_heads(hf, [(9, 6)]):
+        ours = next_token_ce(hf, tokens)
+    theirs = ht.run_with_hooks(tokens, return_type="loss", loss_per_token=True, fwd_hooks=[("blocks.9.attn.hook_z", zero_9_6)])
+    assert (ours - next_token_ce(hf, tokens)).abs().max() > 1e-3  # the ablation does something
+    torch.testing.assert_close(ours, theirs, rtol=1e-4, atol=1e-4)

@@ -72,6 +72,17 @@ def patch_resid_pre(block, fn):
     return block.register_forward_pre_hook(pre, with_kwargs=True)
 
 
+def resid_module(model: HFGPT2, layer: int):
+    """The module whose input is the residual stream before `layer`; layer = n_layers is the final residual stream
+    (blocks.{n_layers - 1}.hook_resid_post), the input to ln_f."""
+    return model.model.h[layer] if layer < len(model.model.h) else model.model.ln_f
+
+
+def resid_hook_name(layer: int, n_layers: int = 12) -> str:
+    """TransformerLens / SAELens hook name for the residual stream before `layer` (n_layers: the final one)."""
+    return f"blocks.{layer}.hook_resid_pre" if layer < n_layers else f"blocks.{n_layers - 1}.hook_resid_post"
+
+
 def next_token_ce(model: HFGPT2, toks: torch.Tensor) -> torch.Tensor:
     """[B, T] tokens -> [B, T - 1] next-token cross-entropy, through the tied unembedding."""
     h = model.model(toks).last_hidden_state
@@ -85,8 +96,9 @@ def reconstruct(sae, x: torch.Tensor) -> torch.Tensor:
 
 
 def gate_batch(model: HFGPT2, sae, layer: int, toks: torch.Tensor) -> dict:
-    """Sums for one batch: the SAE on resid_pre of `layer` (positions 1..T-1), and the three next-token losses."""
-    block = model.model.h[layer]
+    """Sums for one batch: the SAE on the residual stream before `layer` (positions 1..T-1; layer 12 is the final
+    residual stream), and the three next-token losses."""
+    block = resid_module(model, layer)
     cap = {}
     h = patch_resid_pre(block, lambda x: cap.__setitem__("x", x))
     try:
@@ -145,11 +157,11 @@ def tl_check(sae, layer: int, toks: torch.Tensor, ours: HFGPT2) -> dict:
         tl_check.model = HookedTransformer.from_pretrained_no_processing(
             "gpt2", device=toks.device, **sae.cfg.metadata.model_from_pretrained_kwargs)
     tl = tl_check.model
-    name = f"blocks.{layer}.hook_resid_pre"
+    name = resid_hook_name(layer, len(ours.model.h))
     _, cache = tl.run_with_cache(toks, names_filter=name)
     x_tl = cache[name]
     cap = {}
-    h = patch_resid_pre(ours.model.h[layer], lambda x: cap.__setitem__("x", x))
+    h = patch_resid_pre(resid_module(ours, layer), lambda x: cap.__setitem__("x", x))
     try:
         ce_ours = next_token_ce(ours, toks)
     finally:
@@ -189,7 +201,8 @@ def main(argv=None):
     p.add_argument("atlas", type=Path, help="an atlas directory: its tokens.npy and docs.npy are used")
     p.add_argument("--out", type=Path, default=Path("results/sae-gate"))
     p.add_argument("--release", default="gpt2-small-res-jb")
-    p.add_argument("--layers", default="0-11", help="resid_pre layers, e.g. 0-11 or 0,6,10")
+    p.add_argument("--layers", default="0-11", help="resid_pre layers, e.g. 0-11 or 0,6,10; 12 is the final residual stream "
+                   "(blocks.11.hook_resid_post). Rows for these layers replace any already in --out")
     p.add_argument("--rows-per-file", type=int, default=250)
     p.add_argument("--check-rows", type=int, default=32, help="rows for the TransformerLens cross-check, per layer")
     p.add_argument("--batch-size", type=int, default=16)
@@ -211,7 +224,7 @@ def main(argv=None):
     out, fires_all = [], []
     for layer in layers:
         t0 = time.time()
-        sae_id = f"blocks.{layer}.hook_resid_pre"
+        sae_id = resid_hook_name(layer, len(model.model.h))
         sae = load_sae(args.release, sae_id, args.device)
         meta = sae.cfg.metadata
         per_file = []
@@ -246,8 +259,17 @@ def main(argv=None):
         fires_all.append(fires.numpy())
         del sae
     df = pd.DataFrame(out)
+    fires = np.stack(fires_all)
+    if (args.out / "gate.parquet").exists():  # keep the other layers of an earlier run
+        old = pd.read_parquet(args.out / "gate.parquet")
+        df = pd.concat([old[~old.layer.isin(layers)], df], ignore_index=True).sort_values("layer", ignore_index=True)
+        if (args.out / "fires.npz").exists():
+            f = np.load(args.out / "fires.npz")
+            keep = ~np.isin(f["layers"], layers)
+            merged = dict(zip(f["layers"][keep].tolist(), f["fires"][keep])) | dict(zip(layers, fires))
+            fires = np.stack([merged[l] for l in df.layer])
     df.to_parquet(args.out / "gate.parquet", index=False)
-    np.savez(args.out / "fires.npz", layers=np.array(layers), fires=np.stack(fires_all), n_tokens=df.n_tokens.to_numpy())
+    np.savez(args.out / "fires.npz", layers=df.layer.to_numpy(), fires=fires, n_tokens=df.n_tokens.to_numpy())
     (args.out / "manifest.json").write_text(json.dumps({
         "atlas": str(args.atlas), "release": args.release, "layers": layers, "rows_per_file": args.rows_per_file,
         "check_rows": args.check_rows, "reference": REFERENCES.get(args.release, {}).get("source"),
