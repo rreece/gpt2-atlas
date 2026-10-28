@@ -230,6 +230,8 @@ def main(argv=None):
     p.add_argument("--layers", default="0-11", help="resid_pre layers, e.g. 0-11 or 0,6,10; 12 is the final residual stream "
                    "(blocks.11.hook_resid_post). Rows for these layers replace any already in --out")
     p.add_argument("--rows-per-file", type=int, default=250)
+    p.add_argument("--context", type=int, default=0, help="truncate rows to their first N tokens (BOS + N - 1), e.g. 64 to "
+                   "stay inside the 64-token training context of OpenAI's SAEs")
     p.add_argument("--no-bos-context", type=int, default=0, help="gate on rows in an SAE's own training format: the atlas "
                    "rows' tokens 1..N, no BOS, every position counted (e.g. 64 for OpenAI's SAEs)")
     p.add_argument("--check-rows", type=int, default=32, help="rows for the TransformerLens cross-check, per layer")
@@ -250,6 +252,9 @@ def main(argv=None):
     if args.no_bos_context:  # the SAE's own training format: no BOS, N tokens, every position counted
         N = args.no_bos_context
         rows_tokens, skip, row_format = (lambda r: tokens[r, 1 : 1 + N]), 0, f"no BOS, {N} tokens"
+    elif args.context:
+        N = args.context
+        rows_tokens, skip, row_format = (lambda r: tokens[r, :N]), 1, f"BOS + {N - 1} tokens"
     else:
         rows_tokens, skip, row_format = (lambda r: tokens[r]), 1, f"BOS + {tokens.shape[1] - 1} tokens"
     model = HFGPT2(args.device)
@@ -261,10 +266,13 @@ def main(argv=None):
         sae = load_sae(args.release, sae_id, args.device)
         meta = sae.cfg.metadata
         per_file = []
+        # Feature activations are [batch * T, d_sae]: cap them near 16 rows x 128 tokens x 32k features (~65M floats).
+        T_rows = rows_tokens(rows_by_file[0][:1]).shape[1]
+        bs = max(1, min(args.batch_size, int(16 * 128 * 32768 / (sae.cfg.d_sae * T_rows))))
         for f, rows in rows_by_file.items():
             acc = None
-            for r0 in range(0, len(rows), args.batch_size):
-                toks = torch.from_numpy(rows_tokens(rows[r0 : r0 + args.batch_size]).astype(np.int64)).to(args.device)
+            for r0 in range(0, len(rows), bs):
+                toks = torch.from_numpy(rows_tokens(rows[r0 : r0 + bs]).astype(np.int64)).to(args.device)
                 acc = add(acc, gate_batch(model, sae, layer, toks, skip))
             per_file.append(acc)
         m = metrics(per_file)
@@ -294,6 +302,8 @@ def main(argv=None):
               f"TL check: resid {check['tl_resid_max_rel_diff']:.1e}, CE {check['tl_ce_max_abs_diff']:.1e}  ({time.time() - t0:.0f}s)")
         fires_all.append(fires.numpy())
         del sae
+        if args.device == "mps":  # free the layer's SAE and buffers before the next (128k SAEs need it)
+            torch.mps.empty_cache()
     df = pd.DataFrame(out)
     fires = np.stack(fires_all)
     if (args.out / "gate.parquet").exists():  # keep the other layers of an earlier run
