@@ -556,11 +556,15 @@ class HFGPT2:
     from everything written to the residual stream (resid_*, attn_out, mlp_out). Folding LayerNorm
     leaves the MLP pre- and post-activations unchanged. This avoids the bridge's per-module hook
     overhead (about 1.8x faster on an M4) and keeps the model plain for bf16 and torch.compile later.
+
+    With center=False the residual stream is left raw, as in unprocessed HF or TransformerLens weights: the
+    systematic for centering the residual stream. MLP activations are the same either way.
     """
 
-    def __init__(self, device="cpu", name="gpt2"):
+    def __init__(self, device="cpu", name="gpt2", center: bool = True):
         from transformers import GPT2Model
 
+        self.center = center
         self.model = GPT2Model.from_pretrained(name).to(device).eval()  # no LM head: nothing to unembed
         c = self.model.config
         self.cfg = SimpleNamespace(n_layers=c.n_layer, d_model=c.n_embd, d_mlp=c.n_inner or 4 * c.n_embd)
@@ -568,7 +572,7 @@ class HFGPT2:
     def _register(self, name: str, fn):
         _, layer, *rest = name.split(".")
         block = self.model.h[int(layer)]
-        center = lambda x: x - x.mean(-1, keepdim=True)
+        center = (lambda x: x - x.mean(-1, keepdim=True)) if self.center else (lambda x: x)
         first = lambda out: out[0] if isinstance(out, tuple) else out
         match rest:
             case ["hook_resid_pre"]:
@@ -618,7 +622,7 @@ class TLGPT2:
                 pass
 
 
-BACKENDS = {"hf": HFGPT2, "tl": TLGPT2}
+BACKENDS = {"hf": HFGPT2, "hf-raw": lambda device: HFGPT2(device, center=False), "tl": TLGPT2}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1004,7 +1008,7 @@ def main(argv=None):
     s.add_argument("--k", type=int, default=20)
     s.add_argument("--hist-stride", type=int, default=4, help="histograms (quantiles) use every Nth token; 1 = all")
     s.add_argument("--device", default=default_device())
-    s.add_argument("--backend", choices=list(BACKENDS), default="hf", help="hf: plain transformers (fast); tl: TransformerLens bridge (reference)")
+    s.add_argument("--backend", choices=list(BACKENDS), default="hf", help="hf: plain transformers (fast); hf-raw: the same without centering the residual stream; tl: TransformerLens bridge (reference)")
     s.add_argument("--positions", action="store_true", help="also keep statistics per position bucket (positions.parquet, resid_positions.npz)")
     s.add_argument("--hooks", help="comma-separated fnmatch patterns over hook names, e.g. 'blocks.[0-2].mlp.hook_pre' (default: MLP hook_post in every layer and the residual stream)")
     s = sub.add_parser("export", help="merge state-*.pt -> parquet + npz")

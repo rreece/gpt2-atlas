@@ -114,3 +114,16 @@ def test_run_on_a_subset_stops_after_the_last_hook_reached(models, tokens):
     a = run(hf, toks, 0, len(toks), batch_size=2, k=5, progress=False, hooks=hooks)
     assert set(a.acc) == set(hooks)
     assert all(a.acc[name]["moments"].n == 4 * 31 for name in hooks)
+
+
+def test_raw_backend_differs_only_by_the_residual_mean(models, tokens):
+    """hf-raw, for the dependence on centering the residual stream: MLP activations unchanged, residual uncentered."""
+    hf, _ = models
+    raw = HFGPT2("cpu", center=False)
+    names = ["blocks.5.hook_resid_pre", "blocks.11.hook_resid_post", "blocks.5.mlp.hook_pre", "blocks.5.mlp.hook_post"]
+    a, b = capture(hf, tokens, names), capture(raw, tokens, names)
+    for name in names[2:]:
+        torch.testing.assert_close(b[name], a[name])
+    for name in names[:2]:
+        assert (b[name] - a[name]).abs().max() > 1e-2
+        torch.testing.assert_close(b[name] - b[name].mean(-1, keepdim=True), a[name], rtol=1e-5, atol=1e-4)

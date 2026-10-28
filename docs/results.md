@@ -9,7 +9,8 @@ A first look at what GPT-2 small does over 1M OpenWebText tokens, from the stage
 MLP neurons and 9,984 residual-stream dimensions (13 hook points × 768), with bootstrap errors over 16 shards in 8
 files. The same atlas on 1M tokens each of FineWeb and Python code measures how much of it depends on the corpus, a
 50M-token deep scan of layers 0–2 separates rare neurons from silent ones, and a 512-token atlas measures how the
-statistics depend on position in the context.
+statistics depend on position in the context. Running the same tokens without centering the residual stream checks
+the last processing convention.
 
 - **The residual stream grows and then collapses.** Its total variance grows about 4800× from the embedding to the
   final residual. Its effective dimension rises from 14 to about 170 in layers 7–9, then collapses to about 7 at the
@@ -32,6 +33,8 @@ statistics depend on position in the context.
 - **Position matters most at the start of the context.** Layer 1's high firing rate builds up over the first ~16
   positions (5% at position 1, 29% from 16 on), and the offset dimensions are largest at position 1 and decay with
   position. Beyond about position 16, statistics change little out to 511, and long documents look like the rest.
+- **Centering the residual stream changes almost nothing.** Raw (uncentered) residuals differ from the TransformerLens
+  convention only along the all-ones direction, which carries at most 0.1% of the variance; MLP neurons are identical.
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
   2e-6 relative.
 
@@ -51,10 +54,11 @@ end.
 | Compute | about 4 min per corpus on an M4 (MPS) for the run, 1–3 min to tokenize, about 3.5 min to export (two bootstraps over 16 shards) |
 
 Sections 1–5 are OpenWebText; section 6 compares the corpora; section 7 is a 50M-token deep scan of layers 0–2;
-section 8 is position and context length, from a 512-token atlas.
+section 8 is position and context length, from a 512-token atlas; section 9 is the dependence on centering the
+residual stream.
 
 To reproduce: `source setup.sh`, then `run-atlas` (OpenWebText into `results/atlas/`),
-`run-atlas results/atlas-fineweb 1e6 fineweb`, `run-atlas results/atlas-code 1e6 code`, the runs in §7 and §8, and
+`run-atlas results/atlas-fineweb 1e6 fineweb`, `run-atlas results/atlas-code 1e6 code`, the runs in §7–§9, and
 `run-notebook`, which runs `notebooks/atlas.ipynb` headless, in place, and writes every figure here into
 `docs/figures/`. The FineWeb and code atlases here were built with 2 files, before the default became 8.
 
@@ -365,13 +369,50 @@ and total-variance panels above therefore measure position spread as well as tok
 picture is safe: at the final residual the effective dimension falls with position, from 9.7 (positions 1–7) to 5.5
 (128–511). Separating the two needs a covariance within each position, the next step for this section.
 
-## 9. Validation
+## 9. Dependence on centering the residual stream
+
+Everything above follows TransformerLens's processed convention, as the pretrained SAEs do. For what the atlas reads,
+that convention does one thing: it removes each token's mean over d_model from the residual stream. Centering the
+weights that write to the stream is linear, so it equals subtracting that mean. (Folding LayerNorm leaves MLP
+activations unchanged.) The `hf-raw` backend skips the centering, on the same tokens as the default atlas:
+
+    python -m atlas run results/atlas-raw --shards 16 --backend hf-raw   # tokens.npy copied from results/atlas
+
+The raw residual is the centered one plus m·**1**, where m is the token's mean over the 768 dimensions. The all-ones
+direction is orthogonal to everything in the centered stream, so the raw total variance is the centered one plus the
+variance along **1**, exactly, and any change in effective dimension comes from that single direction.
+
+![Residual total variance and effective dimension, centered vs raw](figures/results_convention.png)
+
+| Layer | Total variance: centered | Raw | Along the all-ones direction (share) | Mean of m | Std of m | Effective dimension: centered / raw |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 11.6 | 11.7 | 0.0 (0.0%) | −0.002 | 0.003 | 14.3 / 14.3 |
+| 4 | 2,156.7 | 2,157.1 | 0.4 (0.0%) | −0.018 | 0.024 | 104.0 / 103.9 |
+| 8 | 5,861.2 | 5,862.2 | 1.0 (0.0%) | 0.025 | 0.035 | 170.7 / 170.6 |
+| 11 | 19,070.0 | 19,072.6 | 2.6 (0.0%) | 0.173 | 0.058 | 104.1 / 104.1 |
+| 12 (final) | 56,096.7 | 56,138.3 | 41.5 (0.1%) | −0.094 | 0.233 | 6.8 / 6.8 |
+
+- **MLP neurons are identical,** to the last bit (maximum difference 0), as expected: LayerNorm removes the mean
+  before every MLP.
+- **The all-ones direction is nearly empty.** A token's mean over d_model is on average −0.09 to 0.17, with a spread
+  of 0.003–0.23 across tokens, against unit spreads that grow from about 0.1 to over 8 with depth. It carries at most
+  0.1% of the raw variance. Raw minus centered total variance equals the variance along **1** at every layer, as it
+  must.
+- **Nothing downstream changes.** Effective dimensions agree within errors at every layer. The offset dimensions are
+  the same: 79 (layer, dimension) pairs either way, 78 in common, and the other one sits at the 3-std threshold. Their
+  means move by at most 0.2.
+
+LayerNorm removes the mean before every block reads the stream, so the model gets almost no training signal along the
+all-ones direction, which is consistent with it staying nearly empty. For GPT-2 small this systematic is negligible.
+It would matter for a model or tool where that direction is not nearly empty.
+
+## 10. Validation
 
 | Check | Result |
 | --- | --- |
 | Pointers reproduce: 12 random top- and bottom-k entries recomputed from `(row, pos)` | all match, worst relative difference 2.1e-6 |
-| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap | 45 of 45 pass |
-| Plain HF backend vs. TransformerLens bridge | agree within 2e-5 of the activation scale at every hook (see design doc); a run over a subset of hooks stops only after the last one reached |
+| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap, the uncentered backend | 46 of 46 pass |
+| Plain HF backend vs. TransformerLens bridge | agree within 2e-5 of the activation scale at every hook (see design doc); a run over a subset of hooks stops only after the last one reached; the uncentered backend differs only by each token's mean over d_model |
 
 ## Caveats
 
@@ -392,10 +433,9 @@ picture is safe: at the final residual the effective dimension falls with positi
 
 ## Next
 
-From the [roadmap](atlas-design.md#roadmap):
+Every stage 1 systematic is now measured. From the [roadmap](atlas-design.md#roadmap):
 
-- **Covariance within each position,** to separate token content from position spread in §8.
-- **Deep scans beyond layers 0–2 and OpenWebText:** the 10 silent candidates in layers 3–6, and code for the
-  code-specific neurons.
-- **Then stage 2:** pretrained SAE bases, behind the gate that each SAE reproduces its release's reported metrics on
-  this pipeline.
+- **The gate into stage 2:** check that a pretrained SAE reproduces its release's variance explained, CE loss
+  recovered, L0 and dead-feature fraction on this pipeline, before any feature-level work.
+- **Follow-ups for stage 1:** a covariance within each position, to separate token content from position spread
+  (§8); deep scans of the 10 silent candidates in layers 3–6, and of code for the code-specific neurons.
