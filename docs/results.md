@@ -489,18 +489,18 @@ and centered writing weights, the convention of §9. The metrics follow SAELens'
 
 | Layer | L0 (post) | Alive (post) | Variance explained, centered | About the origin (post) | CE increase (post) | CE loss score |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0 | 12.4 (12.24) | 79.3% (80.0%) | 97.8% | VE0 (99.15%) | 0.020 (0.02) | 0.999 |
-| 1 | 14.7 (14.68) | 83.1% (83.4%) | 95.0% | VE1 (98.37%) | 0.018 (0.03) | 0.996 |
-| 2 | 18.7 (18.80) | 79.6% (80.0%) | 94.3% | VE2 (98.07%) | 0.064 (0.07) | 0.987 |
-| 3 | 26.0 (25.75) | 86.3% (86.3%) | 92.0% | VE3 (96.97%) | 0.155 (0.18) | 0.985 |
-| 4 | 33.3 (33.14) | 97.7% (97.7%) | 90.1% | VE4 (95.77%) | 0.122 (0.14) | 0.992 |
-| 5 | 44.1 (43.61) | 99.7% (99.7%) | 88.8% | VE5 (94.90%) | 0.138 (0.15) | 0.989 |
-| 6 | 50.6 (49.68) | 99.9% (100%) | 87.5% | VE6 (93.90%) | 0.138 (0.14) | 0.987 |
-| 7 | 58.3 (57.29) | 100% (100%) | 86.4% | VE7 (93.08%) | 0.147 (0.15) | 0.985 |
-| 8 | 66.5 (65.47) | 100% (100%) | 85.5% | VE8 (92.57%) | 0.150 (0.15) | 0.981 |
-| 9 | 72.1 (71.10) | 100% (100%) | 84.5% | VE9 (92.05%) | 0.156 (0.15) | 0.989 |
-| 10 | 55.1 (53.79) | 100% (100%) | 81.3% | VE10 (91.12%) | 0.202 (0.22) | 0.976 |
-| 11 | 60.3 (59.16) | 99.8% (100%) | 81.3% | VE11 (93.30%) | 0.234 (0.27) | 0.965 |
+| 0 | 12.4 (12.24) | 79.3% (80.0%) | 97.8% | 98.9% (99.15%) | 0.020 (0.02) | 0.999 |
+| 1 | 14.7 (14.68) | 83.1% (83.4%) | 95.0% | 98.1% (98.37%) | 0.018 (0.03) | 0.996 |
+| 2 | 18.7 (18.80) | 79.6% (80.0%) | 94.3% | 97.8% (98.07%) | 0.064 (0.07) | 0.987 |
+| 3 | 26.0 (25.75) | 86.3% (86.3%) | 92.0% | 96.6% (96.97%) | 0.155 (0.18) | 0.985 |
+| 4 | 33.3 (33.14) | 97.7% (97.7%) | 90.1% | 95.3% (95.77%) | 0.122 (0.14) | 0.992 |
+| 5 | 44.1 (43.61) | 99.7% (99.7%) | 88.8% | 94.3% (94.90%) | 0.138 (0.15) | 0.989 |
+| 6 | 50.6 (49.68) | 99.9% (100%) | 87.5% | 93.3% (93.90%) | 0.138 (0.14) | 0.987 |
+| 7 | 58.3 (57.29) | 100% (100%) | 86.4% | 92.5% (93.08%) | 0.147 (0.15) | 0.985 |
+| 8 | 66.5 (65.47) | 100% (100%) | 85.5% | 92.0% (92.57%) | 0.150 (0.15) | 0.981 |
+| 9 | 72.1 (71.10) | 100% (100%) | 84.5% | 91.5% (92.05%) | 0.156 (0.15) | 0.989 |
+| 10 | 55.1 (53.79) | 100% (100%) | 81.3% | 90.5% (91.12%) | 0.202 (0.22) | 0.976 |
+| 11 | 60.3 (59.16) | 99.8% (100%) | 81.3% | 93.0% (93.30%) | 0.234 (0.27) | 0.965 |
 
 The CE increase is CE_sae − CE_clean in nats per token; the post's is its CE with the SAE minus a clean CE it gives
 only as "3.3", so it is uncertain by about ±0.05. Bootstrap errors over files are at most 0.13 on L0, 0.05 points on
@@ -512,7 +512,7 @@ variance explained and 0.0003 on the CE loss score.
   TransformerLens's `HookedTransformer`, loaded as SAELens recommends, to 3×10⁻⁶ relative, and its per-token losses
   to 10⁻⁴.
 - **Every release metric matches.** L0 agrees with the post within 2.4% at every layer, alive features within 0.7
-  points, variance explained about the origin within PENDING points, and the CE increase within the rounding of the
+  points, variance explained about the origin within 0.7 points (always slightly below, by 0.2–0.6), and the CE increase within the rounding of the
   post's clean CE.
 - **SAELens's built-in reference values for this release are rough.** Its `expected_l0` (10, 10, 18, 23, …) and
   `expected_var_explained` (0.999, 0.9, 0.77 in three tiers) are hand-entered approximations; the post's table is the
@@ -533,11 +533,48 @@ accumulators.
 
 ## 12. Validation
 
+Checks that the atlas computes what it claims, grouped by what they check against. The notebook reruns the first
+group's checks and the calibration test with every run (notebook §10); the unit tests are in `tests/`.
+
+**Exactness and internal consistency**
+
 | Check | Result |
 | --- | --- |
 | Pointers reproduce: 12 random top- and bottom-k entries recomputed from `(row, pos)` | all match, worst relative difference 2.1e-6 |
-| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap, the uncentered backend, the SAE gate's splicing hook | 47 of 47 pass |
-| Plain HF backend vs. TransformerLens bridge | agree within 2e-5 of the activation scale at every hook (see design doc); a run over a subset of hooks stops only after the last one reached; the uncentered backend differs only by each token's mean over d_model |
+| Position buckets pool back to the whole: each unit's buckets in the 512-token atlas (§8), merged, against its overall moments | counts equal; means agree to 1e-7 of a unit's spread, stds to 7e-7 relative, firing rates exactly |
+| Deep scan vs the 1M atlas (§7): firing rates on different data, same code | median ratio 1.000, 1st–99th percentile 0.97–1.03 |
+| Centering identity (§9): raw minus centered total variance against the variance along the all-ones direction | equal at every layer, as the decomposition requires |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook | 47 of 47 pass |
+
+**Cross-implementation**
+
+| Check | Result |
+| --- | --- |
+| Plain HF backend vs TransformerLens bridge, 7 hook types × layers 0, 5, 11 (`tests/test_backends.py`) | agree within 2e-5 of the activation scale; a run over a subset of hooks stops only after the last one reached |
+| Full atlas, HF vs TransformerLens backend ([design doc](atlas-design.md#stage-1-status)) | statistics agree to ~1e-5 relative; 0.6% of top-k pointers swap among exact ties |
+| SAE pipeline vs TransformerLens's `HookedTransformer` (§11), every layer | residual stream within 3e-6 relative, per-token loss within 1e-4 |
+
+**External: published numbers**
+
+| Check | Result |
+| --- | --- |
+| Bloom's `gpt2-small-res-jb` SAEs vs the release post (§11) | L0 within 2.4%, alive features within 0.7 points, variance explained about the origin within 0.7 points, CE increase within the rounding of the post's clean CE |
+| Known features of GPT-2 small's residual stream (§1, §2) | outlier dimensions (480 early, 447 in the middle layers, 496 at the final residual) and large constant offsets, consistent with the outlier ("massive activation") dimensions reported for GPT-2 |
+
+**Statistical calibration**
+
+| Check | Result |
+| --- | --- |
+| The file-to-file test (§5) under its null: shards shuffled across files, 20 permutations | median ratio 1.007 (range 0.88–1.14), against 0.990 for F(7, 8). The actual files give 1.061, inside that range: the 1M atlas alone cannot resolve the file-to-file term, which is why §5 measures it with the deep scan |
+| Small-sample correction of the bootstrap (unit test) | the corrected cluster bootstrap recovers s / √G for a statistic that differs only between files |
+
+**Data integrity**
+
+| Check | Result |
+| --- | --- |
+| No document used twice, default atlas | 7,816 rows from 7,816 distinct (file, document) pairs, files 0–7 |
+| Identical 127-token windows across documents | one window appears twice: newsletter boilerplate ("Sign up for Take Action Now and get three actions in your inbox every week") |
+| No documents shared between OpenWebText files 0 and 1 (a one-off check, hashing all 100,173 documents of each) | none shared |
 
 ## Caveats
 
