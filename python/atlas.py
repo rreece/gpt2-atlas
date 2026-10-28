@@ -223,6 +223,95 @@ class Covariance(Accumulator):
         return self.c / self.n
 
 
+# Position buckets: bucket j holds positions edges[j] .. edges[j + 1] - 1. Log-spaced, so early positions, where the
+# context grows fastest, get fine buckets. Fixed edges let atlases of any seq_len (up to 1024) merge and compare.
+POS_EDGES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+POS_COV_EDGES = [1, 8, 32, 128, 1024]  # coarser for covariance, which costs d x d per bucket
+
+
+def _bucket_slices(edges, T):
+    """(bucket, lo, hi) for each bucket with positions in 1..T-1; hi is exclusive."""
+    return [(j, lo, min(hi, T)) for j, (lo, hi) in enumerate(zip(edges[:-1], edges[1:])) if lo < T]
+
+
+class BucketMoments(Accumulator):
+    """Moments (count, mean, M2, max, values > 0) per position bucket: arrays [n_buckets, d]. Merges exactly."""
+
+    def __init__(self, d: int, edges=POS_EDGES):
+        B = len(edges) - 1
+        self.edges = list(edges)
+        self.n = torch.zeros(B, dtype=torch.int64)
+        self.mean = torch.zeros(B, d, dtype=torch.float64)
+        self.m2 = torch.zeros(B, d, dtype=torch.float64)
+        self.max = torch.full((B, d), -torch.inf, dtype=torch.float64)
+        self.n_pos = torch.zeros(B, d, dtype=torch.int64)
+
+    def update(self, act: torch.Tensor):
+        """act: [B, T, d] from a hook, position 0 included (and skipped: buckets start at 1)."""
+        slices = _bucket_slices(self.edges, act.shape[1])
+        stats, n = [], torch.zeros_like(self.n)
+        for j, lo, hi in slices:
+            x = act[:, lo:hi].reshape(-1, act.shape[-1]).float()
+            var, mean = torch.var_mean(x, 0, correction=0)
+            stats.append(torch.stack([mean, var * x.shape[0], x.max(0).values, (x > 0).sum(0, dtype=torch.float32)]))
+            n[j] = x.shape[0]
+        stats = torch.stack(stats).cpu().double()  # one device -> CPU transfer for all buckets
+        b = BucketMoments.__new__(BucketMoments)
+        b.edges, b.n = self.edges, n
+        b.mean, b.m2, b.max, b.n_pos = (torch.zeros_like(self.mean) for _ in range(4))
+        b.max.fill_(-torch.inf)
+        rows = [j for j, _, _ in slices]
+        b.mean[rows], b.m2[rows], b.max[rows], b.n_pos[rows] = stats[:, 0], stats[:, 1], stats[:, 2], stats[:, 3]
+        b.n_pos = b.n_pos.long()
+        self.merge(b)
+
+    def merge(self, b: BucketMoments):
+        assert self.edges == b.edges, "position buckets must share edges to merge"
+        na, nb = self.n.double()[:, None], b.n.double()[:, None]
+        n = na + nb
+        w = torch.where(n > 0, nb / n.clamp(min=1), 0.0)
+        delta = b.mean - self.mean
+        self.m2 += b.m2 + delta**2 * na * w
+        self.mean += delta * w
+        self.max = torch.maximum(self.max, b.max)
+        self.n_pos += b.n_pos
+        self.n += b.n
+
+
+class BucketCovariance(Accumulator):
+    """Covariance per position bucket: n [n_buckets], mean [n_buckets, d], c [n_buckets, d, d]. Merges exactly."""
+
+    def __init__(self, d: int, edges=POS_COV_EDGES):
+        B = len(edges) - 1
+        self.edges = list(edges)
+        self.n = torch.zeros(B, dtype=torch.int64)
+        self.mean = torch.zeros(B, d, dtype=torch.float64)
+        self.c = torch.zeros(B, d, d, dtype=torch.float64)
+
+    def update(self, act: torch.Tensor):
+        b = BucketCovariance(act.shape[-1], self.edges)
+        for j, lo, hi in _bucket_slices(self.edges, act.shape[1]):
+            x = act[:, lo:hi].reshape(-1, act.shape[-1]).float()
+            mean = x.mean(0)
+            xc = x - mean
+            b.n[j], b.mean[j], b.c[j] = x.shape[0], mean.cpu().double(), (xc.T @ xc).cpu().double()
+        self.merge(b)
+
+    def merge(self, b: BucketCovariance):
+        assert self.edges == b.edges, "position buckets must share edges to merge"
+        na, nb = self.n.double(), b.n.double()
+        n = na + nb
+        w = torch.where(n > 0, nb / n.clamp(min=1), 0.0)
+        delta = b.mean - self.mean
+        self.c += b.c + delta[:, :, None] * delta[:, None, :] * (na * w)[:, None, None]
+        self.mean += delta * w[:, None]
+        self.n += b.n
+
+    @property
+    def cov(self) -> torch.Tensor:
+        return self.c / self.n.double().clamp(min=1)[:, None, None]
+
+
 _ONES: dict = {}
 
 
@@ -380,9 +469,11 @@ def hist_mask(index: torch.Tensor, T: int, stride: int) -> torch.Tensor:
 class Atlas:
     """Accumulators for every hook. Moments, top-k and covariance see every token; histograms (and so the
     exported quantiles) see every `hist_stride`-th token, which cuts their cost, the largest, by that factor.
-    Residual dimensions are signed, so they also keep bottom-k; MLP neurons (GELU) keep only top-k."""
+    Residual dimensions are signed, so they also keep bottom-k; MLP neurons (GELU) keep only top-k. With positions,
+    every hook also keeps moments per position bucket, and residual hooks a covariance per coarse position bucket."""
 
-    def __init__(self, hooks: dict[str, int], k: int = 20, n_bins: int = 256, hist_stride: int = 1, device="cpu"):
+    def __init__(self, hooks: dict[str, int], k: int = 20, n_bins: int = 256, hist_stride: int = 1, device="cpu",
+                 positions: bool = False):
         edges = asinh_edges(n_bins)
         self.hooks = dict(hooks)
         self.hist_stride = hist_stride
@@ -393,6 +484,10 @@ class Atlas:
             if hook_kind(name) == "resid":
                 a["bottomk"] = TopK(d, k, device, largest=False)
                 a["cov"] = Covariance(d)
+            if positions:
+                a["posmoments"] = BucketMoments(d)
+                if hook_kind(name) == "resid":
+                    a["poscov"] = BucketCovariance(d)
             self.acc[name] = a
 
     def update(self, name: str, act: torch.Tensor, index: torch.Tensor):
@@ -406,6 +501,9 @@ class Atlas:
             a["bottomk"].update(x, index)
         if "cov" in a:
             a["cov"].update(x)
+        for kind in ("posmoments", "poscov"):
+            if kind in a:
+                a[kind].update(act)
 
     def merge(self, other: Atlas):
         assert self.hooks == other.hooks
@@ -426,7 +524,8 @@ class Atlas:
 
     @classmethod
     def from_state(cls, state: dict, device="cpu") -> Atlas:
-        classes = {"moments": Moments, "hist": Histogram, "topk": TopK, "bottomk": TopK, "cov": Covariance}
+        classes = {"moments": Moments, "hist": Histogram, "topk": TopK, "bottomk": TopK, "cov": Covariance,
+                   "posmoments": BucketMoments, "poscov": BucketCovariance}
         obj = cls.__new__(cls)
         obj.hooks, obj.n_rows = state["hooks"], state["n_rows"]
         obj.hist_stride = state.get("hist_stride", 1)  # states written before subsampling existed
@@ -528,12 +627,12 @@ BACKENDS = {"hf": HFGPT2, "tl": TLGPT2}
 
 
 def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, k: int = 20, hist_stride: int = 1,
-        device="cpu", progress=True, hooks: dict[str, int] | None = None) -> Atlas:
+        device="cpu", progress=True, hooks: dict[str, int] | None = None, positions: bool = False) -> Atlas:
     """Accumulate rows start:stop at `hooks` (default_hooks if None). The forward pass stops after the last of them."""
     from tqdm.auto import tqdm
 
     hooks = hooks or default_hooks(model.cfg)
-    atlas = Atlas(hooks, k=k, hist_stride=hist_stride, device=device)
+    atlas = Atlas(hooks, k=k, hist_stride=hist_stride, device=device, positions=positions)
     last = max(hooks, key=hook_order)  # the last one reached, not the last one listed
     T = tokens.shape[1]
     pos = torch.arange(1, T, device=device)
@@ -670,6 +769,74 @@ def contexts(tokens: np.ndarray, tokenizer, row: np.ndarray, pos: np.ndarray, be
     return tok_s[inv.ravel()], ctx_s[inv.ravel()]
 
 
+def export_positions(atlas: Atlas, out: Path, shards=(), total=None, stat=None):
+    """Write positions.parquet (moments of every unit per position bucket) and resid_positions.npz (total variance and
+    effective dimension per residual layer and coarse position bucket). With shards, total = (weights, scale) and
+    stat = (weights, scale) as in export add `*_err` and `*_err_stat`; the covariance summaries get the total error only."""
+    import pandas as pd
+
+    names = list(atlas.acc)
+    pm = [atlas.acc[name]["posmoments"] for name in names]
+    edges = np.array(pm[0].edges)
+    B = len(edges) - 1
+    cols = {"hook": [], "kind": [], "layer": [], "bucket": [], "pos_lo": [], "pos_hi": [], "unit": []}
+    for name, m in zip(names, pm):
+        d = m.mean.shape[1]
+        for key, v in [("hook", name), ("kind", hook_kind(name)), ("layer", hook_layer(name))]:
+            cols[key].append(np.full(B * d, v, dtype=object if key != "layer" else int))
+        cols["bucket"].append(np.repeat(np.arange(B), d))
+        cols["pos_lo"].append(np.repeat(edges[:-1], d))
+        cols["pos_hi"].append(np.repeat(edges[1:] - 1, d))
+        cols["unit"].append(np.tile(np.arange(d), B))
+    df = pd.DataFrame({k: np.concatenate(v) for k, v in cols.items()})
+    n = np.concatenate([np.repeat(m.n.numpy(), m.mean.shape[1]) for m in pm]).astype(float)
+    flat = lambda f: np.concatenate([f(m).numpy().ravel() for m in pm])  # rows ordered as df: hook, bucket, unit
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["n"], df["mean"], df["std"] = n, flat(lambda m: m.mean), np.sqrt(flat(lambda m: m.m2) / n)
+        df["max"], df["frac_pos"] = flat(lambda m: m.max), flat(lambda m: m.n_pos.double()) / n
+    if shards and total is not None:
+        for (w, scale), suffix in ((total, ""), (stat, "_stat")):
+            errs = {c: np.full(len(df), np.nan) for c in ("mean", "std", "frac_pos")}
+            offset = 0
+            for name in names:  # per hook and bucket, pool the shards' moments for that bucket
+                d = atlas.acc[name]["posmoments"].mean.shape[1]
+                for j in range(B):
+                    sm = [sh.acc[name]["posmoments"] for sh in shards]
+                    ns = np.array([float(m.n[j]) for m in sm])
+                    if ns.sum() > 0 and (ns > 0).all():
+                        reps = pooled_moments(w, ns, np.stack([m.mean[j].numpy() for m in sm]), np.stack([m.m2[j].numpy() for m in sm]),
+                                              np.stack([m.n_pos[j].double().numpy() for m in sm]))
+                        for c in errs:
+                            errs[c][offset + j * d : offset + (j + 1) * d] = reps[c].std(0) * scale
+                offset += B * d
+            for c, v in errs.items():
+                df[f"{c}_err{suffix}"] = v
+    df[df.n > 0].to_parquet(out / "positions.parquet", index=False)
+
+    resid = sorted((name for name in names if "poscov" in atlas.acc[name]), key=hook_layer)
+    if not resid:
+        return
+    pc = [atlas.acc[name]["poscov"] for name in resid]
+    covs = torch.stack([c.cov for c in pc]).numpy()  # [L, Bc, d, d]
+    tr = np.trace(covs, axis1=2, axis2=3)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pr = tr**2 / (covs**2).sum((2, 3))
+    extra = {}
+    if shards and total is not None:
+        w, scale = total
+        te, pe = np.full(tr.shape, np.nan), np.full(tr.shape, np.nan)
+        for i, name in enumerate(resid):
+            for j in range(tr.shape[1]):
+                cs = [sh.acc[name]["poscov"] for sh in shards]
+                ns = np.array([float(c.n[j]) for c in cs])
+                if (ns > 0).all():
+                    t, p = pooled_cov_summaries(w, ns, np.stack([c.mean[j].numpy() for c in cs]), np.stack([c.c[j].numpy() for c in cs]))
+                    te[i, j], pe[i, j] = t.std() * scale, p.std() * scale
+        extra = {"total_var_err": te, "pr_err": pe}
+    np.savez(out / "resid_positions.npz", layer=np.array([hook_layer(n) for n in resid]), edges=np.array(pc[0].edges),
+             n=np.stack([c.n.numpy() for c in pc]), total_var=tr, pr=pr, **extra)
+
+
 def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[Atlas] = (), groups=(), n_boot: int = 500):
     """Write the merged atlas. With two or more shards (and the file of each in `groups`), also write
     bootstrap errors, per-file residual summaries and the per-shard moments in shards.parquet.
@@ -729,6 +896,8 @@ def export(atlas: Atlas, tokens: np.ndarray, tokenizer, out: Path, shards: list[
     topk["token"], topk["context"] = contexts(tokens, tokenizer, topk["row"].to_numpy(), topk["pos"].to_numpy())
     neurons.to_parquet(out / "neurons.parquet", index=False)
     topk.sort_values(["hook", "unit", "side", "rank"]).to_parquet(out / "topk.parquet", index=False)
+    if "posmoments" in next(iter(atlas.acc.values())):
+        export_positions(atlas, out, shards, (w, scale) if boot else None, (w_stat, scale_stat) if boot else None)
 
     resid = [name for name in atlas.acc if "cov" in atlas.acc[name]]
     resid.sort(key=hook_layer)
@@ -836,6 +1005,7 @@ def main(argv=None):
     s.add_argument("--hist-stride", type=int, default=4, help="histograms (quantiles) use every Nth token; 1 = all")
     s.add_argument("--device", default=default_device())
     s.add_argument("--backend", choices=list(BACKENDS), default="hf", help="hf: plain transformers (fast); tl: TransformerLens bridge (reference)")
+    s.add_argument("--positions", action="store_true", help="also keep statistics per position bucket (positions.parquet, resid_positions.npz)")
     s.add_argument("--hooks", help="comma-separated fnmatch patterns over hook names, e.g. 'blocks.[0-2].mlp.hook_pre' (default: MLP hook_post in every layer and the residual stream)")
     s = sub.add_parser("export", help="merge state-*.pt -> parquet + npz")
     s.add_argument("dir", type=Path)
@@ -878,7 +1048,7 @@ def main(argv=None):
         for start, stop in ranges:
             t0 = time.time()
             atlas = run(model, tokens, start, stop, args.batch_size, args.k, args.hist_stride, args.device,
-                        progress=len(ranges) == 1, hooks=select_hooks(model.cfg, args.hooks))
+                        progress=len(ranges) == 1, hooks=select_hooks(model.cfg, args.hooks), positions=args.positions)
             dt = time.time() - t0
             state = atlas.state() | {"rows": (start, stop), "model": "gpt2", "backend": args.backend,
                                      "git_commit": git_commit(), "torch": str(torch.__version__), "seconds": dt}

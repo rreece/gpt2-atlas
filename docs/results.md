@@ -7,8 +7,9 @@
 
 A first look at what GPT-2 small does over 1M OpenWebText tokens, from the stage 1 atlas: statistics for all 36,864
 MLP neurons and 9,984 residual-stream dimensions (13 hook points × 768), with bootstrap errors over 16 shards in 8
-files. The same atlas on 1M tokens each of FineWeb and Python code measures how much of it depends on the corpus, and a
-50M-token deep scan of layers 0–2 separates rare neurons from silent ones.
+files. The same atlas on 1M tokens each of FineWeb and Python code measures how much of it depends on the corpus, a
+50M-token deep scan of layers 0–2 separates rare neurons from silent ones, and a 512-token atlas measures how the
+statistics depend on position in the context.
 
 - **The residual stream grows and then collapses.** Its total variance grows about 4800× from the embedding to the
   final residual. Its effective dimension rises from 14 to about 170 in layers 7–9, then collapses to about 7 at the
@@ -28,10 +29,13 @@ files. The same atlas on 1M tokens each of FineWeb and Python code measures how 
 - **Errors are small, and files of one corpus are near replicates.** A unit's mean is known to about 0.002 of its
   spread. The errors now include the variation from one file of the corpus to the next, which the deep scan bounds at
   about 0.0003 of a unit's spread; it adds only 2–6% to the error.
+- **Position matters most at the start of the context.** Layer 1's high firing rate builds up over the first ~16
+  positions (5% at position 1, 29% from 16 on), and the offset dimensions are largest at position 1 and decay with
+  position. Beyond about position 16, statistics change little out to 511, and long documents look like the rest.
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
   2e-6 relative.
 
-These are initial results: 128-token windows, three corpora and the neuron basis only. The caveats are listed at the
+These are initial results: up to 512-token windows, three corpora and the neuron basis only. The caveats are listed at the
 end.
 
 ## Setup
@@ -46,10 +50,11 @@ end.
 | Errors | bootstrap over 16 shards in 8 files: resampling files (total error) or shards within files (statistical), see §5 |
 | Compute | about 4 min per corpus on an M4 (MPS) for the run, 1–3 min to tokenize, about 3.5 min to export (two bootstraps over 16 shards) |
 
-Sections 1–5 are OpenWebText; section 6 compares the corpora; section 7 is a 50M-token deep scan of layers 0–2.
+Sections 1–5 are OpenWebText; section 6 compares the corpora; section 7 is a 50M-token deep scan of layers 0–2;
+section 8 is position and context length, from a 512-token atlas.
 
 To reproduce: `source setup.sh`, then `run-atlas` (OpenWebText into `results/atlas/`),
-`run-atlas results/atlas-fineweb 1e6 fineweb`, `run-atlas results/atlas-code 1e6 code`, the deep scan in §7, and
+`run-atlas results/atlas-fineweb 1e6 fineweb`, `run-atlas results/atlas-code 1e6 code`, the runs in §7 and §8, and
 `run-notebook`, which runs `notebooks/atlas.ipynb` headless, in place, and writes every figure here into
 `docs/figures/`. The FineWeb and code atlases here were built with 2 files, before the default became 8.
 
@@ -293,12 +298,79 @@ the scan, and the top-k contexts that come closest.
 - **Silent on OpenWebText is not silent everywhere.** Two more layer 1 neurons, 1822 and 2400, never fire in the 50M
   OpenWebText tokens, with maxima just below 0 (−0.02 and −0.01). Yet they fired on 1M tokens of code, 33 and 2 times.
 
-## 8. Validation
+## 8. Position and context length
+
+Every statistic above pools positions 1–127 of 128-token windows. A 512-token atlas measures how the statistics depend
+on position, out to 511: 2M OpenWebText tokens from 3,912 documents of at least 511 tokens (files 0–7), with
+`run --positions`. That adds moments per position bucket for every unit (`positions.parquet`; buckets 1, 2–3, 4–7, …,
+256–511) and a residual covariance per coarse bucket (`resid_positions.npz`; 1–7, 8–31, 32–127, 128–511).
+
+    python -m atlas tokenize results/atlas-512 --n-tokens 2e6 --seq-len 512
+    python -m atlas run results/atlas-512 --shards 16 --positions
+    python -m atlas export results/atlas-512
+
+GPT-2's attention is causal, so positions 1–127 of a 512-token window compute exactly what a 128-token window of the
+same text would. "Context length" is therefore position: the longer windows add positions 128–511. The only other
+difference is which documents qualify, since a 512-token window needs a document of at least 511 tokens.
+
+![Firing rate, total variance and effective dimension by position](figures/results_position_layers.png)
+
+**Firing rates.** Median MLP neuron firing rate by position:
+
+| Layer | 1 | 2–3 | 4–7 | 8–15 | 16–31 | 32–127 | 256–511 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 4.8% | 7.2% | 6.7% | 6.5% | 6.2% | 6.0% | 5.8% |
+| 1 | 5.0% | 14.8% | 21.3% | 26.8% | 28.6% | 28.6% | 28.8% |
+| 6 | 5.5% | 10.0% | 10.1% | 10.2% | 10.2% | 10.3% | 10.2% |
+| 11 | 10.7% | 12.8% | 13.2% | 13.7% | 13.9% | 13.9% | 13.5% |
+
+The 32–127 column pools two buckets (their medians agree to 0.4 points). Layer 1's high firing rate (§3) is a property
+of position: its median neuron fires on 5% of tokens at position 1 and builds up over the first ~16 positions to 29%.
+Every layer fires least at position 1, and from about position 16 on firing rates are nearly flat out to 511.
+
+**Offset dimensions.** The offset dimensions of §2 are largest at the start of the context and decay with position
+(mean over tokens):
+
+| Dimension, layer | 1 | 4–7 | 16–31 | 64–127 | 256–511 |
+| --- | --- | --- | --- | --- | --- |
+| 447, layer 11 | 124.8 | 108.5 | 93.4 | 84.1 | 80.4 |
+| 481, layer 11 | 131.5 | 113.3 | 96.8 | 87.4 | 81.8 |
+| 373, layer 1 | −26.7 | −25.2 | −18.9 | −14.0 | −12.9 |
+| 64, layer 1 | −14.7 | −21.0 | −24.7 | −23.3 | −22.2 |
+
+Most halve or lose a third of their size between position 1 and 256–511, with the steepest change in the first ~30
+positions. Dimension 64 is the exception: it starts smaller and settles by position 16.
+
+![Per-unit shifts between positions, and long-document selection](figures/results_position_units.png)
+
+**Per-unit position dependence.** For every unit, the shift of its mean between position buckets, in units of its
+spread, against a noise floor from the bootstrap errors of the two buckets:
+
+| Median \|Δ mean\| / std | MLP neurons (floor) | Residual dims (floor) |
+| --- | --- | --- |
+| positions 1–7 vs 32–127 | 0.077 (0.011) | 0.17 (0.012) |
+| positions 256–511 vs 32–127 | 0.018 (0.005) | 0.058 (0.006) |
+| positions 1–127: long documents vs the default atlas | 0.009 (0.005) | 0.011 (0.006) |
+
+- **Early positions** differ the most, 7–14× the floor.
+- **Late positions** differ by much less, 3.5–10× the floor: real but small, mostly in the residual stream.
+- **Long documents** (at least 511 tokens) differ from the default atlas's documents (at least 127) by under 2× the
+  floor, a third of the FineWeb shift (§6). The 128-token results carry over to long documents.
+
+**Caution: covariance by position mixes in the position embedding.** A bucket's covariance includes the variation
+between the positions inside it as well as between tokens at the same position. At layer 0, the position embedding
+alone is 51% of the variance in positions 128–511 (9–24% in the narrower buckets), and it lies almost entirely in about
+2 directions. That is why the widest bucket's effective dimension collapses to 7 at layer 0. The effective-dimension
+and total-variance panels above therefore measure position spread as well as token content, and only the qualitative
+picture is safe: at the final residual the effective dimension falls with position, from 9.7 (positions 1–7) to 5.5
+(128–511). Separating the two needs a covariance within each position, the next step for this section.
+
+## 9. Validation
 
 | Check | Result |
 | --- | --- |
 | Pointers reproduce: 12 random top- and bottom-k entries recomputed from `(row, pos)` | all match, worst relative difference 2.1e-6 |
-| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k), sampling across a file, hook selection, the file-level bootstrap | 43 of 43 pass |
+| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap | 45 of 45 pass |
 | Plain HF backend vs. TransformerLens bridge | agree within 2e-5 of the activation scale at every hook (see design doc); a run over a subset of hooks stops only after the last one reached |
 
 ## Caveats
@@ -306,8 +378,11 @@ the scan, and the top-k contexts that come closest.
 - **Few files for the other corpora.** The FineWeb and code atlases use 2 files each, so their errors are statistical
   only. On OpenWebText the file term adds only a few percent, but FineWeb (crawl dumps) and code (repositories) may
   vary more from file to file.
-- **Short context.** Only positions 1–127 of 128-token windows are covered. Rows start mid-document after a BOS, which
-  GPT-2 never saw in training.
+- **Context.** The main atlases cover positions 1–127 and the position study 1–511, not GPT-2's full 1024. Rows start
+  mid-document after a BOS, which GPT-2 never saw in training, and that may be part of what makes the first positions
+  special (§8).
+- **Covariance by position mixes in the position embedding.** A position bucket's covariance includes the variation
+  between the positions inside it, so the effective dimension by position (§8) is only qualitative.
 - **The neuron basis.** Single neurons are often polysemantic, so a unit's top-10 contexts (as for L9/1000) may not
   name what it does. SAE bases are stage 2.
 - **Thin tails.** In the 1M-token atlases, rare units have fewer than about 100 examples; the deep scan (§7) covers
@@ -319,7 +394,7 @@ the scan, and the top-k contexts that come closest.
 
 From the [roadmap](atlas-design.md#roadmap):
 
-- **Context length and position:** `seq_len` 128 vs 512, and statistics by position bucket.
+- **Covariance within each position,** to separate token content from position spread in §8.
 - **Deep scans beyond layers 0–2 and OpenWebText:** the 10 silent candidates in layers 3–6, and code for the
   code-specific neurons.
 - **Then stage 2:** pretrained SAE bases, behind the gate that each SAE reproduces its release's reported metrics on

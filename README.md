@@ -49,5 +49,5 @@ This project grew out of [ioi-hydra](https://github.com/rreece/ioi-hydra), a one
 Read more about my [research here](http://rreece.github.io/research/).
 
 
-2026/10/26        
-Ryan Reece
+Ryan Reece      
+2026/10/26
