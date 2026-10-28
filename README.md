@@ -8,7 +8,7 @@ laptop-sized: 1M OpenWebText tokens from ~8k documents in about 5 minutes on an 
 **Design: [docs/atlas-design.md](docs/atlas-design.md)** · **Results: [docs/results.md](docs/results.md)**
 
 
-![Self-repair in GPT-2 small’s IOI circuit.](docs/figures/repair_waterfall.png)
+![MLP neuron activation statistics in GPT2 with OpenWebText data.](docs/figures/results_mlp_neurons.png)
 
 ## Setup
 
