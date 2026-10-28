@@ -3,6 +3,24 @@
 *Ryan Reece, 2026-10-26, updated 2026-10-27. Stage 1 (neuron basis) at laptop scale. Design:
 [atlas-design.md](atlas-design.md).*
 
+## Contents
+
+- [Summary](#summary)
+- [Setup](#setup)
+- [Systematic uncertainties](#systematic-uncertainties)
+- [1. Residual-stream geometry](#1-residual-stream-geometry)
+- [2. Offset dimensions in the residual stream](#2-offset-dimensions-in-the-residual-stream)
+- [3. MLP neurons](#3-mlp-neurons)
+- [4. Single units](#4-single-units)
+- [5. Errors: statistical and file to file](#5-errors-statistical-and-file-to-file)
+- [6. Corpus systematic: OpenWebText vs FineWeb vs Python code](#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code)
+- [7. Deep scan of layers 0–2: rare and never-firing neurons](#7-deep-scan-of-layers-02-rare-and-never-firing-neurons)
+- [8. Position and context length](#8-position-and-context-length)
+- [9. Dependence on centering the residual stream](#9-dependence-on-centering-the-residual-stream)
+- [10. Validation](#10-validation)
+- [Caveats](#caveats)
+- [Next](#next)
+
 ## Summary
 
 A first look at what GPT-2 small does over 1M OpenWebText tokens, from the stage 1 atlas: statistics for all 36,864
