@@ -127,3 +127,26 @@ def test_raw_backend_differs_only_by_the_residual_mean(models, tokens):
     for name in names[:2]:
         assert (b[name] - a[name]).abs().max() > 1e-2
         torch.testing.assert_close(b[name] - b[name].mean(-1, keepdim=True), a[name], rtol=1e-5, atol=1e-4)
+
+
+def test_resid_pre_patch_identity_and_zero_ablation(models, tokens):
+    """The splicing hook behind the SAE gate's CE loss score: an identity replacement leaves the loss unchanged, the
+    replacement sees the centered stream (the TransformerLens convention), and a zero ablation changes the loss."""
+    from sae_gate import next_token_ce, patch_resid_pre
+
+    hf, tl = models
+    clean = next_token_ce(hf, tokens)
+    seen = {}
+    h = patch_resid_pre(hf.model.h[5], lambda x: seen.setdefault("x", x) * 1.0)
+    try:
+        same = next_token_ce(hf, tokens)
+    finally:
+        h.remove()
+    torch.testing.assert_close(same, clean, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(seen["x"], capture(tl, tokens, ["blocks.5.hook_resid_pre"])["blocks.5.hook_resid_pre"], rtol=1e-4, atol=1e-4)
+    h = patch_resid_pre(hf.model.h[5], torch.zeros_like)
+    try:
+        zero = next_token_ce(hf, tokens)
+    finally:
+        h.remove()
+    assert (zero.mean() - clean.mean()).abs() > 0.5
