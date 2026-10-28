@@ -444,9 +444,10 @@ def select_hooks(cfg, patterns: str | None = None) -> dict[str, int]:
 
 
 def hook_order(name: str) -> tuple[int, int]:
-    """Where the forward pass reaches a hook: (layer, position within the block)."""
+    """Where the forward pass reaches a hook: (layer, position within the block). An SAE's features (`<hook>.sae`)
+    sit where their hook does."""
     _, layer, rest = name.split(".", 2)
-    return int(layer), BLOCK_HOOKS.index(rest)
+    return int(layer), BLOCK_HOOKS.index(rest.removesuffix(".sae"))
 
 
 def hook_layer(name: str) -> int:
@@ -456,6 +457,8 @@ def hook_layer(name: str) -> int:
 
 
 def hook_kind(name: str) -> str:
+    if name.endswith(".sae"):
+        return "sae"
     return "resid" if "hook_resid" in name else name.split(".")[-1].removeprefix("hook_")
 
 
@@ -631,26 +634,46 @@ BACKENDS = {"hf": HFGPT2, "hf-raw": lambda device: HFGPT2(device, center=False),
 
 
 def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, k: int = 20, hist_stride: int = 1,
-        device="cpu", progress=True, hooks: dict[str, int] | None = None, positions: bool = False) -> Atlas:
-    """Accumulate rows start:stop at `hooks` (default_hooks if None). The forward pass stops after the last of them."""
+        device="cpu", progress=True, hooks: dict[str, int] | None = None, positions: bool = False,
+        saes: dict | None = None, events: tuple[int, ...] = ()) -> Atlas:
+    """Accumulate rows start:stop at `hooks` (default_hooks if None). The forward pass stops after the last of them.
+
+    saes maps a layer to an SAE on its resid_pre (stage 2): its features become units `blocks.L.hook_resid_pre.sae`
+    with the same accumulators, the SAE encoding the residual stream inside the hook. For layers in `events`, every
+    nonzero feature activation is also kept as an event (token index, feature, value) in atlas.events[layer]."""
     from tqdm.auto import tqdm
 
-    hooks = hooks or default_hooks(model.cfg)
-    atlas = Atlas(hooks, k=k, hist_stride=hist_stride, device=device, positions=positions)
-    last = max(hooks, key=hook_order)  # the last one reached, not the last one listed
+    hooks = dict(hooks or default_hooks(model.cfg))
+    saes = saes or {}
+    sae_hooks = {f"blocks.{l}.hook_resid_pre.sae": sae.cfg.d_sae for l, sae in saes.items()}
+    atlas = Atlas(hooks | sae_hooks, k=k, hist_stride=hist_stride, device=device, positions=positions)
+    atlas.events = {l: [] for l in events}
+    raw = set(hooks) | {f"blocks.{l}.hook_resid_pre" for l in saes}  # hook points to register on the backend
+    last = max(raw, key=hook_order)  # the last one reached, not the last one listed
     T = tokens.shape[1]
     pos = torch.arange(1, T, device=device)
     index = None
 
     def make_hook(name):
+        layer = int(name.split(".")[1])
+        sae = saes.get(layer) if name.endswith("hook_resid_pre") else None
+
         def hook(act):
-            atlas.update(name, act, index)
+            if name in hooks:
+                atlas.update(name, act, index)
+            if sae is not None:
+                feats = sae.encode(act.float())  # [B, T, d_sae]; the backend hands over the centered stream
+                atlas.update(f"{name}.sae", feats, index)
+                if layer in atlas.events:
+                    f = feats[:, 1:].reshape(-1, feats.shape[-1])
+                    i, j = f.nonzero(as_tuple=True)
+                    atlas.events[layer].append((index[i].cpu().numpy(), j.int().cpu().numpy(), f[i, j].cpu().numpy()))
             if name == last:
                 raise _Stop
 
         return hook
 
-    callbacks = {name: make_hook(name) for name in hooks}
+    callbacks = {name: make_hook(name) for name in raw}
 
     for r0 in tqdm(range(start, stop, batch_size), disable=not progress, unit="batch"):
         r1 = min(r0 + batch_size, stop)
@@ -981,6 +1004,18 @@ def row_files(dir: Path) -> np.ndarray:
     return docs[:, 0] if docs.shape[1] == 3 else np.zeros(len(docs), dtype=np.int64)
 
 
+def write_events(chunks, T: int, path: Path):
+    """Sparse SAE feature events as Parquet: row, pos, feature, value (one per nonzero activation)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    idx = np.concatenate([c[0] for c in chunks]) if chunks else np.zeros(0, np.int64)
+    feat = np.concatenate([c[1] for c in chunks]) if chunks else np.zeros(0, np.int32)
+    val = np.concatenate([c[2] for c in chunks]) if chunks else np.zeros(0, np.float32)
+    pq.write_table(pa.table({"row": (idx // T).astype(np.int32), "pos": (idx % T).astype(np.int16),
+                             "feature": feat.astype(np.int32), "value": val.astype(np.float32)}), path)
+
+
 def git_commit() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent, text=True).strip()
@@ -1009,6 +1044,10 @@ def main(argv=None):
     s.add_argument("--hist-stride", type=int, default=4, help="histograms (quantiles) use every Nth token; 1 = all")
     s.add_argument("--device", default=default_device())
     s.add_argument("--backend", choices=list(BACKENDS), default="hf", help="hf: plain transformers (fast); hf-raw: the same without centering the residual stream; tl: TransformerLens bridge (reference)")
+    s.add_argument("--sae", help="stage 2: an SAELens release whose resid_pre SAEs encode the stream, e.g. gpt2-small-res-jb")
+    s.add_argument("--sae-layers", default="", help="layers for --sae, comma-separated; their features become units")
+    s.add_argument("--sae-events", default="", help="layers (of --sae-layers) whose nonzero feature activations are also "
+                   "saved as sparse events, events-L<layer>-<start>-<stop>.parquet")
     s.add_argument("--positions", action="store_true", help="also keep statistics per position bucket (positions.parquet, resid_positions.npz)")
     s.add_argument("--hooks", help="comma-separated fnmatch patterns over hook names, e.g. 'blocks.[0-2].mlp.hook_pre' (default: MLP hook_post in every layer and the residual stream)")
     s = sub.add_parser("export", help="merge state-*.pt -> parquet + npz")
@@ -1049,15 +1088,27 @@ def main(argv=None):
         else:
             ranges = [tuple(int(x) if x else d for x, d in zip(args.rows.split(":"), (0, len(tokens))))]
         model = load_model(args.device, args.backend)
+        sae_layers = [int(l) for l in args.sae_layers.split(",") if l]
+        events = tuple(int(l) for l in args.sae_events.split(",") if l)
+        assert set(events) <= set(sae_layers), "--sae-events layers must be among --sae-layers"
+        saes = {}
+        if args.sae:
+            from sae_gate import load_sae
+
+            saes = {l: load_sae(args.sae, f"blocks.{l}.hook_resid_pre", args.device) for l in sae_layers}
         for start, stop in ranges:
             t0 = time.time()
             atlas = run(model, tokens, start, stop, args.batch_size, args.k, args.hist_stride, args.device,
-                        progress=len(ranges) == 1, hooks=select_hooks(model.cfg, args.hooks), positions=args.positions)
+                        progress=len(ranges) == 1, hooks=select_hooks(model.cfg, args.hooks), positions=args.positions,
+                        saes=saes, events=events)
             dt = time.time() - t0
             state = atlas.state() | {"rows": (start, stop), "model": "gpt2", "backend": args.backend,
-                                     "git_commit": git_commit(), "torch": str(torch.__version__), "seconds": dt}
+                                     "git_commit": git_commit(), "torch": str(torch.__version__), "seconds": dt,
+                                     "saes": {l: {"release": args.sae, "sae_id": f"blocks.{l}.hook_resid_pre"} for l in saes}}
             path = args.dir / f"state-{start}-{stop}.pt"
             torch.save(state, path)
+            for layer, chunks in atlas.events.items():
+                write_events(chunks, tokens.shape[1], args.dir / f"events-L{layer}-{start}-{stop}.parquet")
             print(f"{(stop - start) * (tokens.shape[1] - 1):,} tokens in {dt:.0f}s "
                   f"({(stop - start) * tokens.shape[1] / dt:,.0f} tok/s incl. BOS) -> {path}")
 

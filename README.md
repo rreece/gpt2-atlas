@@ -26,6 +26,7 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
     jupyter lab notebooks/atlas.ipynb        # explore: residual geometry, neuron stats, errors, top contexts
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
     run-sae-gate                             # stage 2 gate: pretrained SAEs vs their release's metrics, ~40 min
+    python -m atlas run DIR --sae gpt2-small-res-jb --sae-layers 6,9 --sae-events 9   # stage 2: SAE features as units
     python -c "import duckdb; duckdb.sql(\"select value, context from 'results/atlas/topk.parquet' where kind='post' and layer=9 and unit=1000 order by rank\").show()"
     pytest tests                             # exact merging; HF backend == TransformerLens bridge (~10 s)
 

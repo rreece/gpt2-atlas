@@ -88,7 +88,7 @@ Tokenizing takes about 1 min and export 9 s with either backend.
 
 ## Roadmap
 
-Stage 1 is finished at laptop scale: every stage 1 systematic in the table below is measured ([results](results.md)). The gate into stage 2 has passed: the pretrained SAEs reproduce their release's numbers on this pipeline. The next step is stage 2 itself. The pipeline is basis-independent, so everything fixed in stage 1 carries over to every dictionary.
+Stage 1 is finished at laptop scale: every stage 1 systematic in the table below is measured ([results](results.md)). The gate into stage 2 has passed: the pretrained SAEs reproduce their release's numbers on this pipeline. Stage 2 has begun: `run --sae` makes an SAE's features atlas units at chosen layers, with sparse per-token events (`--sae-events`); layers 6 and 9 are done, and single features match Neuronpedia's dashboards ([results](results.md#12-stage-2-the-atlas-in-the-sae-basis)). Next is the IOI question below. The pipeline is basis-independent, so everything fixed in stage 1 carries over to every dictionary.
 
 ![Atlas roadmap: 4 stages, 3 gates](figures/atlas_roadmap.svg)
 
