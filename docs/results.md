@@ -63,7 +63,8 @@ the last processing convention.
 - **The IOI repair restores the clean features.** With the name movers ablated, the logit difference at the final
   residual is carried by the same SAE features as in the clean run (cosine 0.86–0.94 in three dictionaries). With
   the 24k and 32k dictionaries about half of it sits in the SAE's error and shifts there under the repair; with a 128k
-  dictionary only a quarter does, and the restoration is complete (§13).
+  dictionary only a quarter does, and the restoration is complete. The answer is carried mostly by "say this name"
+  features, about four per name, and the off-dictionary rest is written by the circuit's own heads (§13).
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
   2e-6 relative.
 
@@ -715,16 +716,67 @@ three points:
 Before layer 11 the contrast is starker: the error carries 3.8–4.0 logits of the logit-lens LD for the two smaller
 dictionaries and 0.9 for the 128k one.
 
-- **The dark matter is mostly a capacity limit.** Bloom's 24k and OpenAI's 32k SAEs, different architectures trained
-  differently, leave the same 46% of the LD in their error; the 128k SAE leaves 26%. Its overall reconstruction is
-  only 1–3 points better than the 32k one's (§11), so the extra capacity goes disproportionately to directions that
-  carry the IOI answer, plausibly finer, name-specific features.
+- **The dark matter shrinks with a better dictionary, for two different reasons.** Bloom's 24k and OpenAI's 32k SAEs
+  leave the same 46% of the LD in their error, but differently (below): Bloom's 73 active features span enough but its
+  L1-trained coefficients are off, while 32k's 32 active features span too little. The 128k SAE, with 32 active
+  features from a larger dictionary, fixes both and leaves 26%. Its overall reconstruction is only 1–3 points better
+  than 32k's (§11).
 - **With the largest dictionary the repair is a full restoration.** The features carry the same LD after the repair as
   before (+0.01), and the error's gain (+0.15) is consistent with zero. The shift of LD into the dark matter seen with
   the smaller dictionaries is largely an artifact of their size.
 - **The restoration is robust.** In all three dictionaries the ablated run's per-feature LD contributions match the
   clean run's (cosine 0.86–0.94 at the final residual), and 88–97% of its feature LD comes from features active in
   the clean run.
+
+**What carries the answer: name features.** On a name-balanced set (every single-token name as the indirect object
+once per template, 472 prompts), call a feature a *dedicated name feature* if more than half of its activation falls on
+one IO name and its decoder direction, read through the unembedding, boosts that name's logit more than any other
+name's. At the final residual:
+
+| Dictionary | Dedicated name features | Names covered (of 59) | Per name (median) | Clean LD carried by them | By other features | By the SAE error |
+| --- | --- | --- | --- | --- | --- | --- |
+| Bloom 24k | 270 | 59 | 4 | 1.02 | 0.80 | 1.56 |
+| OpenAI 32k | 124 | 54 | 2 | 0.44 | 1.39 | 1.54 |
+| OpenAI 128k | 262 | 58 | 4 | 1.35 | 1.13 | 0.88 |
+
+- **The IOI answer is carried mostly by "say this name" features,** about four per name in Bloom's 24k and OpenAI's
+  128k dictionaries. Among the ten features carrying the most LD, a "Ben" feature (Bloom 15719) fires for only 8 of
+  the 59 names and boosts "Ben" most.
+- **The 128k advantage is not coverage.** It has about as many name features as Bloom's 24k and covers about as many
+  names, but they carry more LD (1.35 against 1.02), and so do its other features. OpenAI's 32k has half as many name
+  features and carries more of the answer in generic ones.
+
+**Who writes the off-dictionary part.** The SAE's error is not linear in what writes the residual stream, but its part
+outside the span of the active features' decoder directions (and the decoder bias) is: per prompt, projecting onto
+that span's orthogonal complement splits it exactly (to 3×10⁻⁶) into each head's, each MLP's and the embeddings' and
+biases' writes. The rest of the error lies inside the span, from coefficients that are off.
+
+![Each head's direct effect, and the part outside the active features' span](figures/results_ioi_offdict.png)
+
+| Final residual, clean | SAE error LD | Outside the active features' span | Inside it (coefficients off) |
+| --- | --- | --- | --- |
+| Bloom 24k (ReLU, L1; 73 active) | 1.56 | 0.92 | 0.63 |
+| OpenAI 32k (TopK; 32 active) | 1.54 | 1.40 | 0.14 |
+| OpenAI 128k (TopK; 32 active) | 0.88 | 0.86 | 0.01 |
+
+| Head | Direct effect, clean → ablated | Outside the span, OpenAI 128k: clean → ablated | Share of the clean direct effect (Bloom 24k / 128k) |
+| --- | --- | --- | --- |
+| 9.9 (name mover) | +2.89 → −0.03 | +1.14 → −0.04 | 41% / 39% |
+| 9.6 (name mover) | +1.12 → +0.01 | +0.41 → +0.00 | 44% / 37% |
+| 10.0 (name mover) | +0.53 → −0.01 | +0.19 → −0.02 | 38% / 35% |
+| 10.7 (brake) | −2.06 → +0.07 | −0.89 → +0.12 | 42% / 43% |
+| 10.10 (backup) | +0.55 → +1.32 | +0.17 → +0.41 | 27% / 31% |
+| 10.6 (backup) | +0.39 → +0.80 | +0.12 → +0.28 | 40% / 30% |
+| 11.10 (late brake) | −0.92 → −1.19 | −0.42 → −0.54 | 43% / 46% |
+
+- **The off-dictionary LD is written by the circuit's own heads.** The name movers, the brake 10.7 and the late brake
+  11.10 each put 35–46% of their direct effect outside the active features' span, in both dictionaries; the backups
+  27–40%. Apart from head 8.10 (+0.17), no other component writes much of it.
+- **Under the ablation the balance shifts, not the mechanism.** The name movers' off-span part vanishes with them, the
+  released brake's −0.89 goes with it, and the backups add theirs, for a net change of +0.35 (Bloom) or +0.15 (128k)
+  logits outside the span.
+- **What the off-span direction is remains open.** Each head writes a large, consistent share of its IO-name signal
+  outside even the 128k dictionary's active features; why the dictionaries do not capture it is the next question.
 
 ## 14. Validation
 
@@ -741,7 +793,8 @@ group's checks and the calibration test with every run (notebook §12); the unit
 | Centering identity (§9): raw minus centered total variance against the variance along the all-ones direction | equal at every layer, as the decomposition requires |
 | SAE feature events vs feature moments (§12): events per feature against firing counts, accumulated independently | equal for every layer-9 feature; 72.05 events per token, equal to L0 |
 | Linear final-LayerNorm split of the logit difference (§13): features + bias + error + const against the logits | equal to 2e-5 |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens | 49 of 49 pass |
+| Component split of the off-dictionary remainder (§13): heads + MLPs + rest against the remainder, and the components against the residual stream | equal to 3e-6 and 8e-6 |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, the name-balanced prompts and the off-dictionary split | 50 of 50 pass |
 
 **Cross-implementation**
 
@@ -799,8 +852,8 @@ group's checks and the calibration test with every run (notebook §12); the unit
 
 Every stage 1 systematic is now measured, the gate into stage 2 passes, and the first stage 2 question has an answer. From the [roadmap](atlas-design.md#roadmap):
 
-- **What the 128k dictionary's IOI features are (§13):** whether its extra capacity is name-specific features, and which
-  heads write the remaining quarter of the LD that is off-dictionary.
+- **The off-span IO-name signal (§13):** why every circuit head writes 30–45% of its direct effect outside the span of
+  even the 128k dictionary's active features, and whether larger or task-trained dictionaries capture it.
 - **Systematics for §13:** zero and resample ablation, other templates and seeds, as in ioi-hydra.
 - **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
   feature basis.
