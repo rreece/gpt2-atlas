@@ -95,9 +95,9 @@ def reconstruct(sae, x: torch.Tensor) -> torch.Tensor:
     return sae.decode(sae.encode(x))
 
 
-def gate_batch(model: HFGPT2, sae, layer: int, toks: torch.Tensor) -> dict:
-    """Sums for one batch: the SAE on the residual stream before `layer` (positions 1..T-1; layer 12 is the final
-    residual stream), and the three next-token losses."""
+def gate_batch(model: HFGPT2, sae, layer: int, toks: torch.Tensor, skip: int = 1) -> dict:
+    """Sums for one batch: the SAE on the residual stream before `layer` (positions skip..T-1: skip = 1 leaves out a
+    BOS; layer 12 is the final residual stream), and the three next-token losses."""
     block = resid_module(model, layer)
     cap = {}
     h = patch_resid_pre(block, lambda x: cap.__setitem__("x", x))
@@ -106,14 +106,14 @@ def gate_batch(model: HFGPT2, sae, layer: int, toks: torch.Tensor) -> dict:
     finally:
         h.remove()
     B, T, d = cap["x"].shape
-    x = cap["x"][:, 1:].reshape(-1, d).float()
+    x = cap["x"][:, skip:].reshape(-1, d).float()
     feats = sae.encode(x)
     x_hat = sae.decode(feats)
     active = feats != 0
 
-    def splice(xc):  # reconstruction everywhere but BOS, as sae_lens.evals does
+    def splice(xc):  # reconstruction everywhere but a BOS, as sae_lens.evals does
         out = xc.clone()
-        out[:, 1:] = reconstruct(sae, xc[:, 1:].reshape(-1, d)).view(B, T - 1, d)
+        out[:, skip:] = reconstruct(sae, xc[:, skip:].reshape(-1, d)).view(B, T - skip, d)
         return out
 
     losses = {"ce_clean": ce_clean}
@@ -148,18 +148,41 @@ def metrics(accs: list[dict], weights=None) -> dict:
             "ce_score": (ce["ce_zero"] - ce["ce_sae"]) / (ce["ce_zero"] - ce["ce_clean"])}
 
 
-def tl_check(sae, layer: int, toks: torch.Tensor, ours: HFGPT2) -> dict:
-    """The same quantities from TransformerLens's HookedTransformer, loaded as SAELens recommends, on the same tokens:
-    worst differences against our HF pipeline. Loaded once per process (cached on the function)."""
+def sae_kwargs(sae) -> dict:
+    """How SAELens says to load the model for this SAE (TransformerLens processing), {} if it says nothing."""
+    return getattr(sae.cfg.metadata, "model_from_pretrained_kwargs", None) or {}
+
+
+def sae_id_for(release: str, layer: int, n_layers: int = 12) -> str:
+    """The release's id for the residual stream before `layer`: blocks.L.hook_resid_pre, or, for releases trained on
+    resid_post (OpenAI's), the same activations as blocks.{L-1}.hook_resid_post."""
+    from sae_lens.loading.pretrained_saes_directory import get_pretrained_saes_directory
+
+    ids = get_pretrained_saes_directory()[release].saes_map
+    for cand in (resid_hook_name(layer, n_layers), f"blocks.{layer - 1}.hook_resid_post"):
+        if cand in ids:
+            return cand
+    raise KeyError(f"{release} has no SAE on the residual stream before layer {layer}")
+
+
+def tl_check(sae, layer: int, toks: torch.Tensor, ours: HFGPT2, skip: int = 1) -> dict:
+    """The same quantities from TransformerLens's HookedTransformer, loaded as SAELens recommends for this SAE, on the
+    same tokens: worst differences against our HF pipeline. Residual streams are compared centered (ours are; an SAE
+    without centering normalizes the mean away). Models are cached per loading convention."""
+    import json as _json
+
     from transformer_lens import HookedTransformer
 
-    if not hasattr(tl_check, "model"):
-        tl_check.model = HookedTransformer.from_pretrained_no_processing(
-            "gpt2", device=toks.device, **sae.cfg.metadata.model_from_pretrained_kwargs)
-    tl = tl_check.model
-    name = resid_hook_name(layer, len(ours.model.h))
+    kwargs = sae_kwargs(sae)
+    tl_check.models = getattr(tl_check, "models", {})
+    key = _json.dumps(kwargs, sort_keys=True)
+    if key not in tl_check.models:
+        tl_check.models[key] = HookedTransformer.from_pretrained_no_processing("gpt2", device=toks.device, **kwargs)
+    tl = tl_check.models[key]
+    name = sae.cfg.metadata.hook_name
     _, cache = tl.run_with_cache(toks, names_filter=name)
     x_tl = cache[name]
+    x_tl = x_tl - x_tl.mean(-1, keepdim=True)
     cap = {}
     h = patch_resid_pre(resid_module(ours, layer), lambda x: cap.__setitem__("x", x))
     try:
@@ -167,10 +190,13 @@ def tl_check(sae, layer: int, toks: torch.Tensor, ours: HFGPT2) -> dict:
     finally:
         h.remove()
     x_ours = cap["x"]
-    f_tl, f_ours = sae.encode(x_tl[:, 1:]), sae.encode(x_ours[:, 1:])
+    f_tl = sae.encode(x_tl[:, skip:])
+    sae.decode(f_tl)  # normalizing SAEs keep state between encode and decode
+    f_ours = sae.encode(x_ours[:, skip:])
+    sae.decode(f_ours)
     ce_tl = tl(toks, return_type="loss", loss_per_token=True)
-    scale = x_tl[:, 1:].abs().max()
-    return {"tl_resid_max_rel_diff": float((x_ours[:, 1:] - x_tl[:, 1:]).abs().max() / scale),
+    scale = x_tl[:, skip:].abs().max()
+    return {"tl_resid_max_rel_diff": float((x_ours[:, skip:] - x_tl[:, skip:]).abs().max() / scale),
             "tl_l0_ours": float((f_ours != 0).sum(-1).float().mean()), "tl_l0_tl": float((f_tl != 0).sum(-1).float().mean()),
             "tl_ce_max_abs_diff": float((ce_ours - ce_tl).abs().max()), "tl_ce_mean_ours": float(ce_ours.mean()),
             "tl_ce_mean_tl": float(ce_tl.mean())}
@@ -204,6 +230,10 @@ def main(argv=None):
     p.add_argument("--layers", default="0-11", help="resid_pre layers, e.g. 0-11 or 0,6,10; 12 is the final residual stream "
                    "(blocks.11.hook_resid_post). Rows for these layers replace any already in --out")
     p.add_argument("--rows-per-file", type=int, default=250)
+    p.add_argument("--context", type=int, default=0, help="truncate rows to their first N tokens (BOS + N - 1), e.g. 64 to "
+                   "stay inside the 64-token training context of OpenAI's SAEs")
+    p.add_argument("--no-bos-context", type=int, default=0, help="gate on rows in an SAE's own training format: the atlas "
+                   "rows' tokens 1..N, no BOS, every position counted (e.g. 64 for OpenAI's SAEs)")
     p.add_argument("--check-rows", type=int, default=32, help="rows for the TransformerLens cross-check, per layer")
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--n-boot", type=int, default=500)
@@ -219,20 +249,31 @@ def main(argv=None):
     tokens = np.load(args.atlas / "tokens.npy", mmap_mode="r")
     files = row_files(args.atlas)
     rows_by_file = {int(f): np.flatnonzero(files == f)[: args.rows_per_file] for f in np.unique(files)}
+    if args.no_bos_context:  # the SAE's own training format: no BOS, N tokens, every position counted
+        N = args.no_bos_context
+        rows_tokens, skip, row_format = (lambda r: tokens[r, 1 : 1 + N]), 0, f"no BOS, {N} tokens"
+    elif args.context:
+        N = args.context
+        rows_tokens, skip, row_format = (lambda r: tokens[r, :N]), 1, f"BOS + {N - 1} tokens"
+    else:
+        rows_tokens, skip, row_format = (lambda r: tokens[r]), 1, f"BOS + {tokens.shape[1] - 1} tokens"
     model = HFGPT2(args.device)
     rng = np.random.default_rng(0)
     out, fires_all = [], []
     for layer in layers:
         t0 = time.time()
-        sae_id = resid_hook_name(layer, len(model.model.h))
+        sae_id = sae_id_for(args.release, layer, len(model.model.h))
         sae = load_sae(args.release, sae_id, args.device)
         meta = sae.cfg.metadata
         per_file = []
+        # Feature activations are [batch * T, d_sae]: cap them near 16 rows x 128 tokens x 32k features (~65M floats).
+        T_rows = rows_tokens(rows_by_file[0][:1]).shape[1]
+        bs = max(1, min(args.batch_size, int(16 * 128 * 32768 / (sae.cfg.d_sae * T_rows))))
         for f, rows in rows_by_file.items():
             acc = None
-            for r0 in range(0, len(rows), args.batch_size):
-                toks = torch.from_numpy(tokens[rows[r0 : r0 + args.batch_size]].astype(np.int64)).to(args.device)
-                acc = add(acc, gate_batch(model, sae, layer, toks))
+            for r0 in range(0, len(rows), bs):
+                toks = torch.from_numpy(rows_tokens(rows[r0 : r0 + bs]).astype(np.int64)).to(args.device)
+                acc = add(acc, gate_batch(model, sae, layer, toks, skip))
             per_file.append(acc)
         m = metrics(per_file)
         F = len(per_file)
@@ -240,7 +281,8 @@ def main(argv=None):
         reps = [metrics(per_file, wi) for wi in w]
         scale = bootstrap_scale(np.arange(F), True)
         fires = sum(a["fires"] for a in per_file)
-        check = tl_check(sae, layer, torch.from_numpy(tokens[rows_by_file[0][: args.check_rows]].astype(np.int64)).to(args.device), model)
+        check = tl_check(sae, layer, torch.from_numpy(rows_tokens(rows_by_file[0][: args.check_rows]).astype(np.int64)).to(args.device),
+                         model, skip)
         row = {"layer": layer, "hook": sae_id, "release": args.release, "d_sae": sae.cfg.d_sae,
                "n_tokens": int(sum(a["n"] for a in per_file)), **m,
                **{f"{k}_err": float(np.std([r[k] for r in reps]) * scale) for k in m},
@@ -249,7 +291,9 @@ def main(argv=None):
                **{f"post_{k}": (v if np.isscalar(v) else v[layer]) for k, v in REFERENCES.get(args.release, {}).items()
                   if k != "source" and (np.isscalar(v) or layer < len(v))},
                "sae_hook": meta.hook_name, "sae_dataset": meta.dataset_path, "sae_context_size": meta.context_size,
-               "sae_prepend_bos": meta.prepend_bos, "sae_processing": json.dumps(meta.model_from_pretrained_kwargs), **check}
+               "sae_prepend_bos": meta.prepend_bos, "sae_processing": json.dumps(sae_kwargs(sae)),
+               "sae_normalization": sae.cfg.normalize_activations, "sae_architecture": type(sae).__name__,
+               "row_format": row_format, **check}
         out.append(row)
         print(f"layer {layer:2d}: L0 {m['l0']:6.1f} ± {row['l0_err']:.1f} (post {row.get('post_l0')}), "
               f"var. explained {m['var_explained']:.3f} ± {row['var_explained_err']:.3f}, about the origin {m['var_explained_origin']:.3f} "
@@ -258,6 +302,8 @@ def main(argv=None):
               f"TL check: resid {check['tl_resid_max_rel_diff']:.1e}, CE {check['tl_ce_max_abs_diff']:.1e}  ({time.time() - t0:.0f}s)")
         fires_all.append(fires.numpy())
         del sae
+        if args.device == "mps":  # free the layer's SAE and buffers before the next (128k SAEs need it)
+            torch.mps.empty_cache()
     df = pd.DataFrame(out)
     fires = np.stack(fires_all)
     if (args.out / "gate.parquet").exists():  # keep the other layers of an earlier run

@@ -222,14 +222,20 @@ def run(model: HFGPT2, ds: IOIData, resid_layers=(10, 11, 12)) -> dict:
 
 def feature_attribution(sae, x: torch.Tensor, d: torch.Tensor, scale: torch.Tensor) -> dict:
     """Split x . d / scale (the logit difference less its constant) into the SAE's features, its decoder bias and its
-    error: x = W_dec a + b_dec + error. Returns acts [N, d_sae], per-feature contributions [N, d_sae], bias [N] and
-    error [N]; contributions + bias + error = x . d / scale exactly."""
+    error: x = s (W_dec a + b_dec) + m + error, where s, m are 1, 0 for an SAE without input normalization, or each
+    token's std and mean for one with layer_norm normalization (OpenAI's). Returns acts [N, d_sae], per-feature
+    contributions [N, d_sae], bias [N], error [N] and the features' part of the reconstruction, s W_dec a [N, d_model];
+    contributions + bias + error = x . d / scale exactly."""
     a = sae.encode(x)
+    s = getattr(sae, "ln_std", None)  # set by encode for layer_norm-normalized SAEs, cleared by decode
+    m = getattr(sae, "ln_mu", None)
+    s = torch.ones(len(x), 1) if s is None else s.detach().clone()
+    m = torch.zeros(len(x), 1) if m is None else m.detach().clone()
     x_hat = sae.decode(a)
-    per_feature = a * (d @ sae.W_dec.T) / scale[:, None]  # a_f (W_dec[f] . d) / scale
-    bias = (sae.b_dec * d).sum(-1) / scale
+    per_feature = a * (d @ sae.W_dec.T) * s / scale[:, None]  # s a_f (W_dec[f] . d) / scale
+    bias = ((s * sae.b_dec + m) * d).sum(-1) / scale
     error = ((x - x_hat) * d).sum(-1) / scale
-    return {"acts": a, "contrib": per_feature, "bias": bias, "error": error}
+    return {"acts": a, "contrib": per_feature, "bias": bias, "error": error, "features_recon": s * (a @ sae.W_dec)}
 
 
 def bootstrap_mean(x, n_boot: int = 5000, seed: int = 0) -> tuple[float, float, float]:

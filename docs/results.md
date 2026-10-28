@@ -60,9 +60,10 @@ the last processing convention.
   variance explained and CE loss on this pipeline, and our activations match TransformerLens's to 10⁻⁶.
 - **Stage 2 has begun.** At layers 6 and 9 the SAE features are now atlas units, with sparse per-token events at layer 9.
   Single features match Neuronpedia's dashboards, and the SAE's decoder bias is the residual stream's mean.
-- **The IOI repair restores the clean features, but only about half the answer is in the dictionary.** With the name
-  movers ablated, the logit difference at the final residual is carried by the same SAE features as in the clean run
-  (cosine 0.92), yet the SAE's off-dictionary error carries about half of it and gains under the repair (§13).
+- **The IOI repair restores the clean features.** With the name movers ablated, the logit difference at the final
+  residual is carried by the same SAE features as in the clean run (cosine 0.86–0.94 in three dictionaries). With
+  the 24k and 32k dictionaries about half of it sits in the SAE's error and shifts there under the repair; with a 128k
+  dictionary only a quarter does, and the restoration is complete (§13).
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
   2e-6 relative.
 
@@ -445,6 +446,8 @@ that unit's spread (std), unless noted.
 | [Position: the first ~7 tokens](#8-position-and-context-length) | positions 1–7 vs 32–127, 512-token atlas | 0.08 (MLP), 0.17 (residual) | 7–14× its floor | Large: layer 1 fires on 5% of tokens at position 1 and 29% from 16 on; offsets are largest at position 1 |
 | [Corpus: FineWeb](#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code) | FineWeb vs OpenWebText | 0.028–0.045 | 14–18× | Real but modest: web text against web text |
 | [Position: late (256–511)](#8-position-and-context-length) | positions 256–511 vs 32–127 | 0.018 (MLP), 0.058 (residual) | 3.5–10× its floor | Small, mostly in the residual stream |
+| [SAE dictionary, for the IOI logit difference](#13-stage-2-the-ioi-repair-in-the-sae-basis) | Bloom 24k vs OpenAI 32k vs OpenAI 128k | share of the LD in the SAE error: 46% / 46% / 26% | — | Large: what the dictionary misses depends on its size, not its architecture |
+| [SAE context window](#11-the-gate-into-stage-2) | OpenAI's SAEs on positions 1–63 vs 64–127 | variance explained 0.84 vs −0.27 | — | Decisive: these SAEs are only valid within their 64-token training context; a BOS hardly matters |
 | [Long-document selection](#8-position-and-context-length) | documents of ≥511 vs ≥127 tokens, positions 1–127 | ~0.01 | under 2× | Near noise: the 128-token results carry over |
 | [Statistical](#5-errors-statistical-and-file-to-file) | bootstrap over shards | **0.002** on a mean; 0.005 relative on a std; 0.007 relative on a firing rate | — | The reference scale |
 | [File to file, within a corpus](#5-errors-statistical-and-file-to-file) | cluster bootstrap over files; the 50M-token deep scan | ≤ 0.0003 per file | adds 2–6% to the error | Negligible at this scale, and included in `*_err` |
@@ -468,9 +471,10 @@ X has mean m" should carry its statistical error and its conditions, "on OpenWeb
 - **Context beyond 511 tokens.** GPT-2 goes to 1024.
 - **The row layout.** Rows put a BOS before a window that starts mid-document, unlike GPT-2's training windows; that
   may be part of why the first positions look special. One consequence is now seen: features that fire on document
-  boundaries (a mid-prompt `<|endoftext|>`) never fire here (§12).
+  boundaries (a mid-prompt `<|endoftext|>`) never fire here (§12). For OpenAI's SAEs a BOS hardly matters on positions within their context (§11).
 - **Covariance within each position.** Effective dimension by position (§8) is only qualitative so far.
-- **Everything SAE-specific.** The choice of dictionary, and the reconstruction error ("dark matter"), are stage 2.
+- **SAE-specific systematics beyond §13.** The dictionary systematic is measured for the IOI question only (§13);
+  for the feature atlas itself (§12) it is not yet.
 
 ## 11. The gate into stage 2
 
@@ -540,6 +544,34 @@ Two differences, both understood:
 
 With the gate passed, stage 2 can use these SAEs on this pipeline: feature atlases in the SAE basis, with the same
 accumulators.
+
+**OpenAI's SAEs.** The dictionary systematic of §13 also uses OpenAI's TopK SAEs for GPT-2 small (Gao et al. 2024;
+32k and 128k features, k = 32, on `resid_post`), at the three points the IOI analysis needs. Their conventions differ
+from Bloom's: each token is normalized to unit std before encoding (undone on decoding), and they were trained on
+64-token contexts without a BOS. The normalization removes each token's mean, so centering does not matter (§9), but
+the context does:
+
+| Rows, OpenAI 32k SAE | Centered variance explained: before layer 10 / before layer 11 / final residual |
+| --- | --- |
+| BOS + 127 tokens (our rows) | 0.83 / 0.82 / 0.90 |
+| No BOS, 64 tokens (their training format), all positions | 0.99 / 0.98 / 0.91 |
+| BOS + 63 tokens | 0.84 / 0.83 / 0.90 |
+
+The second row looks best but is misleading: without a BOS, position 0 is a real token that becomes the attention
+sink, with about 20× the norm of the others, and it dominates the pooled variance while being easy to reconstruct
+(0.6% error, against 26% for positions 1–63). Measured directly before layer 10, positions 1–63 are reconstructed
+equally well with or without a BOS (0.84 either way), while positions 64–127, outside the training context, are
+reconstructed worse than by the mean (−0.27). So these SAEs are only valid within 64 tokens, where a BOS makes little
+difference, and the gate that matters for the IOI prompts (15–18 tokens with a BOS) is BOS + 63:
+
+| BOS + 63 tokens | L0 | Centered variance explained | About the origin | CE loss score |
+| --- | --- | --- | --- | --- |
+| 32k, before layer 10 / 11 / final residual | 32 | 0.84 / 0.83 / 0.90 | 0.92 / 0.94 / 0.97 | 0.98 / 0.97 / 0.94 |
+| 128k, before layer 10 / 11 / final residual | 32 | 0.87 / 0.86 / 0.91 | 0.94 / 0.95 / 0.98 | 0.99 / 0.98 / 0.96 |
+
+Our activations match TransformerLens's for these SAEs too (residual stream within 10⁻⁵, per-token loss within
+10⁻⁴), and variance explained about the origin is consistent with SAELens's rough reference of 0.9; there is no
+per-layer published table to compare against.
 
 ## 12. Stage 2: the atlas in the SAE basis
 
@@ -658,17 +690,41 @@ and SAE error +0.41 [0.24, 0.58].
   feature LD comes from features active in the clean run. Many features change (only 55–57% are shared), but not the
   ones carrying the answer: the backups and the released brake restore the clean representation rather than build a
   new one.
-- **But the SAE explains only about half the LD, and part of the repair lives outside it.** At the final residual the
-  SAE's error carries 1.56 of the clean LD's 3.35. It is not mostly shrinkage: the error's component along the
-  reconstruction (L1-trained SAEs under-activate) carries only 0.29 of that, and the rest, 96% of the error's norm, is
-  off-dictionary. Counting shrinkage with the features, they carry 2.11 → 1.81 logits under the ablation, while the
-  off-dictionary remainder grows from 1.27 to 1.72. In this dictionary's basis the restoration is incomplete, and the
-  rest of the repair, including its small overshoot, happens in directions the dictionary does not represent.
+- **With Bloom's SAE, about half the LD is outside the dictionary.** At the final residual the SAE's error carries
+  1.56 of the clean LD's 3.35. It is not mostly shrinkage: the error's component along the reconstruction (L1-trained
+  SAEs under-activate) carries only 0.29 of it, and the rest, 96% of the error's norm, is off-dictionary. The ablation
+  moves about 0.4 logits into it (features −0.26, error +0.41). The dictionary systematic below shows this is mostly a
+  limit of the dictionary's size.
 - **The LD-carrying features are prompt-specific.** Each of the ten that carry the most LD is active on only 5–18% of
   prompts, so the answer is spread over many features, plausibly tied to which names appear, rather than one
   "indirect object" feature. Neuronpedia's explanations for them are generic ("mentions of specific individuals and
   organizations"). The feature that gains the most under the ablation (L12/8884) becomes active on 84% of prompts,
   up from 63%.
+
+**The dictionary systematic.** The same analysis with OpenAI's TopK SAEs (§11), 32k and 128k features, on the same
+three points:
+
+![The IOI split across three dictionaries](figures/results_ioi_dictionaries.png)
+
+| Final residual | L0 | Error's share of the clean LD | Change under the ablation: features | SAE error | LD contributions vs clean (cosine) | Ablated feature LD from clean-active features |
+| --- | --- | --- | --- | --- | --- | --- |
+| Bloom 24k | 73 | 46% | −0.26 [−0.40, −0.10] | +0.41 [+0.24, +0.58] | 0.92 | 0.97 |
+| OpenAI 32k | 32 | 46% | −0.18 [−0.31, −0.05] | +0.33 [+0.15, +0.51] | 0.86 | 0.88 |
+| OpenAI 128k | 32 | 26% | +0.01 [−0.19, +0.20] | +0.15 [−0.01, +0.30] | 0.94 | 0.88 |
+
+Before layer 11 the contrast is starker: the error carries 3.8–4.0 logits of the logit-lens LD for the two smaller
+dictionaries and 0.9 for the 128k one.
+
+- **The dark matter is mostly a capacity limit.** Bloom's 24k and OpenAI's 32k SAEs, different architectures trained
+  differently, leave the same 46% of the LD in their error; the 128k SAE leaves 26%. Its overall reconstruction is
+  only 1–3 points better than the 32k one's (§11), so the extra capacity goes disproportionately to directions that
+  carry the IOI answer, plausibly finer, name-specific features.
+- **With the largest dictionary the repair is a full restoration.** The features carry the same LD after the repair as
+  before (+0.01), and the error's gain (+0.15) is consistent with zero. The shift of LD into the dark matter seen with
+  the smaller dictionaries is largely an artifact of their size.
+- **The restoration is robust.** In all three dictionaries the ablated run's per-feature LD contributions match the
+  clean run's (cosine 0.86–0.94 at the final residual), and 88–97% of its feature LD comes from features active in
+  the clean run.
 
 ## 14. Validation
 
@@ -693,7 +749,7 @@ group's checks and the calibration test with every run (notebook §12); the unit
 | --- | --- |
 | Plain HF backend vs TransformerLens bridge, 7 hook types × layers 0, 5, 11 (`tests/test_backends.py`) | agree within 2e-5 of the activation scale; a run over a subset of hooks stops only after the last one reached |
 | Full atlas, HF vs TransformerLens backend ([design doc](atlas-design.md#stage-1-status)) | statistics agree to ~1e-5 relative; 0.6% of top-k pointers swap among exact ties |
-| SAE pipeline vs TransformerLens's `HookedTransformer` (§11), every layer including the final residual | residual stream within 1e-5 relative, per-token loss within 1e-4 |
+| SAE pipeline vs TransformerLens's `HookedTransformer` (§11), every layer including the final residual, Bloom's and OpenAI's SAEs | residual stream within 1e-5 relative, per-token loss within 1e-4 |
 | Heads read and zero-ablated at `attn.c_proj` vs processed TransformerLens's `hook_z` (§13; `tests/test_backends.py`) | head outputs within 1e-5, losses under a zero ablation within 1e-4 |
 
 **External: published numbers**
@@ -730,8 +786,8 @@ group's checks and the calibration test with every run (notebook §12); the unit
   special (§8).
 - **Covariance by position mixes in the position embedding.** A position bucket's covariance includes the variation
   between the positions inside it, so the effective dimension by position (§8) is only qualitative.
-- **One dictionary, one ablation for §13.** The IOI analysis uses a single SAE release and mean ablation only, and
-  before the final residual its LD attribution is a logit lens.
+- **One ablation for §13.** The IOI analysis uses mean ablation only, and before the final residual its LD
+  attribution is a logit lens. OpenAI's SAEs are valid only within their 64-token training context (§11).
 - **The neuron basis.** Single neurons are often polysemantic, so a unit's top-10 contexts (as for L9/1000) may not
   name what it does. SAE bases are stage 2.
 - **Thin tails.** In the 1M-token atlases, rare units have fewer than about 100 examples; the deep scan (§7) covers
@@ -743,8 +799,8 @@ group's checks and the calibration test with every run (notebook §12); the unit
 
 Every stage 1 systematic is now measured, the gate into stage 2 passes, and the first stage 2 question has an answer. From the [roadmap](atlas-design.md#roadmap):
 
-- **The IOI repair's dark matter (§13):** what the off-dictionary half of the logit difference is. A larger or differently
-  trained dictionary at the final residual (OpenAI's 32k / 128k), and the per-head writes into it.
+- **What the 128k dictionary's IOI features are (§13):** whether its extra capacity is name-specific features, and which
+  heads write the remaining quarter of the LD that is off-dictionary.
 - **Systematics for §13:** zero and resample ablation, other templates and seeds, as in ioi-hydra.
 - **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
   feature basis.
