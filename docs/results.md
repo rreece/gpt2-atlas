@@ -317,14 +317,14 @@ difference is which documents qualify, since a 512-token window needs a document
 
 **Firing rates.** Median MLP neuron firing rate by position:
 
-| Layer | 1 | 2–3 | 4–7 | 8–15 | 16–31 | 32–127 | 256–511 |
+| Layer | 1 | 2–3 | 4–7 | 8–15 | 16–31 | 32–63 | 256–511 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0 | 4.8% | 7.2% | 6.7% | 6.5% | 6.2% | 6.0% | 5.8% |
-| 1 | 5.0% | 14.8% | 21.3% | 26.8% | 28.6% | 28.6% | 28.8% |
-| 6 | 5.5% | 10.0% | 10.1% | 10.2% | 10.2% | 10.3% | 10.2% |
-| 11 | 10.7% | 12.8% | 13.2% | 13.7% | 13.9% | 13.9% | 13.5% |
+| 1 | 5.0% | 14.8% | 21.3% | 26.8% | 28.6% | 28.8% | 28.8% |
+| 6 | 5.5% | 10.0% | 10.1% | 10.2% | 10.2% | 10.4% | 10.2% |
+| 11 | 10.7% | 12.8% | 13.2% | 13.7% | 13.9% | 14.0% | 13.5% |
 
-The 32–127 column pools two buckets (their medians agree to 0.4 points). Layer 1's high firing rate (§3) is a property
+Layer 1's high firing rate (§3) is a property
 of position: its median neuron fires on 5% of tokens at position 1 and builds up over the first ~16 positions to 29%.
 Every layer fires least at position 1, and from about position 16 on firing rates are nearly flat out to 511.
 
@@ -338,7 +338,7 @@ Every layer fires least at position 1, and from about position 16 on firing rate
 | 373, layer 1 | −26.7 | −25.2 | −18.9 | −14.0 | −12.9 |
 | 64, layer 1 | −14.7 | −21.0 | −24.7 | −23.3 | −22.2 |
 
-Most halve or lose a third of their size between position 1 and 256–511, with the steepest change in the first ~30
+Most lose a third to a half of their size between position 1 and 256–511, with the steepest change in the first ~30
 positions. Dimension 64 is the exception: it starts smaller and settles by position 16.
 
 ![Per-unit shifts between positions, and long-document selection](figures/results_position_units.png)
