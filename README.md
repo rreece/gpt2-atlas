@@ -44,7 +44,7 @@ The steps can also run separately, e.g. shards on different machines: `python -m
 
 ## See also
 
-This project grew out of [ioi-hydra](https://github.com/rreece/ioi-hydra), a one-day study of self-repair in GPT-2 small's IOI circuit; moved here on 2026/10/26.
+This project grew out of [ioi-hydra](https://github.com/rreece/ioi-hydra), a one-day study of self-repair in GPT-2 small's IOI circuit.
 
 Read more about my [research here](http://rreece.github.io/research/).
 
