@@ -19,7 +19,8 @@
 - [10. Systematic uncertainties](#10-systematic-uncertainties)
 - [11. The gate into stage 2](#11-the-gate-into-stage-2)
 - [12. Stage 2: the atlas in the SAE basis](#12-stage-2-the-atlas-in-the-sae-basis)
-- [13. Validation](#13-validation)
+- [13. Stage 2: the IOI repair in the SAE basis](#13-stage-2-the-ioi-repair-in-the-sae-basis)
+- [14. Validation](#14-validation)
 - [Caveats](#caveats)
 - [Next](#next)
 
@@ -59,6 +60,9 @@ the last processing convention.
   variance explained and CE loss on this pipeline, and our activations match TransformerLens's to 10⁻⁶.
 - **Stage 2 has begun.** At layers 6 and 9 the SAE features are now atlas units, with sparse per-token events at layer 9.
   Single features match Neuronpedia's dashboards, and the SAE's decoder bias is the residual stream's mean.
+- **The IOI repair restores the clean features, but only about half the answer is in the dictionary.** With the name
+  movers ablated, the logit difference at the final residual is carried by the same SAE features as in the clean run
+  (cosine 0.92), yet the SAE's off-dictionary error carries about half of it and gains under the repair (§13).
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
   2e-6 relative.
 
@@ -505,8 +509,10 @@ and centered writing weights, the convention of §9. The metrics follow SAELens'
 | 9 | 72.1 (71.10) | 100% (100%) | 84.5% | 91.5% (92.05%) | 0.156 (0.15) | 0.989 |
 | 10 | 55.1 (53.79) | 100% (100%) | 81.3% | 90.5% (91.12%) | 0.202 (0.22) | 0.976 |
 | 11 | 60.3 (59.16) | 99.8% (100%) | 81.3% | 93.0% (93.30%) | 0.234 (0.27) | 0.965 |
+| 12 (final residual) | 70.1 (—) | 100% (—) | 89.0% | 97.1% (—) | 0.329 (—) | 0.928 |
 
-The CE increase is CE_sae − CE_clean in nats per token; the post's is its CE with the SAE minus a clean CE it gives
+Row 12 is the SAE on the final residual stream (`blocks.11.hook_resid_post`), gated for §13; the release post has no
+row for it, and SAELens's rough `expected_l0` is 70. The CE increase is CE_sae − CE_clean in nats per token; the post's is its CE with the SAE minus a clean CE it gives
 only as "3.3", so it is uncertain by about ±0.05. Bootstrap errors over files are at most 0.13 on L0, 0.05 points on
 variance explained and 0.0003 on the CE loss score.
 
@@ -581,10 +587,93 @@ The run stops after layer 9, so it takes about 5 minutes on an M4 (3,600 tokens/
   L9/7155 (11% of tokens), fires on conjunctions and punctuation in our top contexts, which Neuronpedia's label
   ("dates and months") does not obviously describe.
 
-## 13. Validation
+## 13. Stage 2: the IOI repair in the SAE basis
+
+[ioi-hydra](https://github.com/rreece/ioi-hydra) found that mean-ablating the three name-mover heads {9.9, 9.6, 10.0}
+removes 4.57 logits of direct effect, yet the logit difference LD = logit(IO) − logit(S) does not drop: the network
+repairs 103% of the damage, mostly through the copy-suppression head 10.7 releasing its brake and backup heads in
+layers 10–11 stepping up. Head-level accounting cannot say whether the repair rebuilds the same *representation* or
+reaches the same LD another way. SAE features can.
+
+`python/ioi.py` ports ioi-hydra's 128 prompts and its mean ablation to our HF backend. At each prompt's final token it
+encodes the residual stream with the gate-validated SAEs at three points, clean against ablated: **before layer 10**
+(after 9.9 and 9.6 are ablated), **before layer 11** (after layer 10's brake and backups respond) and **the final
+residual stream**, which the unembedding reads. The final LayerNorm is linear given a run's scale, so at the final
+residual LD splits exactly into the SAE's features, its decoder bias and its error:
+
+LD = Σ_f a_f (W_dec[f] · d) / scale + (b_dec · d) / scale + (error · d) / scale + const, with d = γ ⊙ (W_U[IO] − W_U[S]).
+
+At the two earlier points the same projection, with each point's own scale, is a logit lens: an approximation, used
+only qualitatively. A **control** ablation (heads 9.10, 9.1 and 10.8, the three in layers 9–10 with the smallest direct
+effects and no role in the circuit) shows how much features move under an ablation that should not matter. Errors
+are 95% bootstrap intervals over prompts.
+
+**The head-level result reproduces exactly**, on our HF backend without TransformerLens:
+
+| | This pipeline | ioi-hydra |
+| --- | --- | --- |
+| Clean LD | 3.38 [3.14, 3.61] | 3.38 |
+| LD with the name movers mean-ablated | 3.53 [3.25, 3.82] | 3.53 |
+| Direct effect lost | 4.57 [4.29, 4.85] | 4.57 |
+| Repair fraction | 1.034 | 1.03 |
+| 10.7's direct effect, clean → ablated | −2.06 → 0.07 | −2.06 → +0.07 |
+| Final LayerNorm scale, clean → ablated | 17.8 → 16.6 | 17.8 → 16.6 |
+
+![The IOI repair in the SAE basis](figures/results_ioi_features.png)
+
+**Features, clean against ablated:**
+
+| Point | Run | L0 | Active features shared (Jaccard) | Per-feature LD contributions (cosine) | Ablated feature LD from clean-active features |
+| --- | --- | --- | --- | --- | --- |
+| Before layer 10 | name movers ablated | 91 → 55 | 0.47 [0.45, 0.48] | 0.39 [0.35, 0.43] | — |
+| Before layer 10 | control | 91 → 90 | 0.98 [0.97, 0.98] | 1.00 | 1.00 |
+| Before layer 11 | name movers ablated | 68 → 62 | 0.55 [0.54, 0.57] | 0.87 [0.85, 0.89] | 0.94 |
+| Before layer 11 | control | 68 → 68 | 0.97 [0.97, 0.98] | 1.00 | 1.00 |
+| Final residual | name movers ablated | 73 → 61 | 0.57 [0.56, 0.58] | 0.92 [0.90, 0.94] | 0.97 |
+| Final residual | control | 73 → 73 | 0.97 [0.97, 0.98] | 1.00 | 1.00 |
+
+Before layer 10 the ablated run's feature LD is near zero (0.27), so its share is not meaningful.
+
+**Where the LD lives:**
+
+| Point | Run | LD (logit lens; exact at the final residual) | SAE features | SAE error |
+| --- | --- | --- | --- | --- |
+| Before layer 10 | clean | 13.98 [13.15, 14.81] | 7.29 | 6.75 |
+| Before layer 10 | ablated | 1.86 [1.35, 2.37] | 0.27 | 1.66 |
+| Before layer 11 | clean | 8.98 [8.36, 9.58] | 5.21 | 3.81 |
+| Before layer 11 | ablated | 8.09 [7.55, 8.63] | 3.95 | 4.19 |
+| Final residual | clean | 3.35 [3.06, 3.66] | 1.82 [1.49, 2.12] | 1.56 [1.16, 1.97] |
+| Final residual | ablated | 3.51 [3.19, 3.83] | 1.56 [1.28, 1.83] | 1.97 [1.61, 2.32] |
+
+The decoder bias carries −0.02 to −0.07 throughout. At the final residual, features + bias + error + const reproduce
+the LD to 2×10⁻⁵. The change in LD under the ablation, +0.15 [−0.02, 0.33], splits into features −0.26 [−0.40, −0.10]
+and SAE error +0.41 [0.24, 0.58].
+
+- **The control moves nothing.** 97–98% of active features are shared and the per-feature LD contributions are
+  unchanged, so the changes under the name-mover ablation are real.
+- **Before layer 10, the damage is visible in the features.** With 9.9 and 9.6 ablated, only 47% of active features
+  are shared with the clean run, and the logit-lens LD falls from 14.0 to 1.9.
+- **After the repair, the LD is carried by the same features.** Before layer 11 and at the final residual, the
+  per-feature LD contributions correlate with the clean run's at cosine 0.87 and 0.92, and 94–97% of the ablated run's
+  feature LD comes from features active in the clean run. Many features change (only 55–57% are shared), but not the
+  ones carrying the answer: the backups and the released brake restore the clean representation rather than build a
+  new one.
+- **But the SAE explains only about half the LD, and part of the repair lives outside it.** At the final residual the
+  SAE's error carries 1.56 of the clean LD's 3.35. It is not mostly shrinkage: the error's component along the
+  reconstruction (L1-trained SAEs under-activate) carries only 0.29 of that, and the rest, 96% of the error's norm, is
+  off-dictionary. Counting shrinkage with the features, they carry 2.11 → 1.81 logits under the ablation, while the
+  off-dictionary remainder grows from 1.27 to 1.72. In this dictionary's basis the restoration is incomplete, and the
+  rest of the repair, including its small overshoot, happens in directions the dictionary does not represent.
+- **The LD-carrying features are prompt-specific.** Each of the ten that carry the most LD is active on only 5–18% of
+  prompts, so the answer is spread over many features, plausibly tied to which names appear, rather than one
+  "indirect object" feature. Neuronpedia's explanations for them are generic ("mentions of specific individuals and
+  organizations"). The feature that gains the most under the ablation (L12/8884) becomes active on 84% of prompts,
+  up from 63%.
+
+## 14. Validation
 
 Checks that the atlas computes what it claims, grouped by what they check against. The notebook reruns the first
-group's checks and the calibration test with every run (notebook §11); the unit tests are in `tests/`.
+group's checks and the calibration test with every run (notebook §12); the unit tests are in `tests/`.
 
 **Exactness and internal consistency**
 
@@ -595,7 +684,8 @@ group's checks and the calibration test with every run (notebook §11); the unit
 | Deep scan vs the 1M atlas (§7): firing rates on different data, same code | median ratio 1.000, 1st–99th percentile 0.97–1.03 |
 | Centering identity (§9): raw minus centered total variance against the variance along the all-ones direction | equal at every layer, as the decomposition requires |
 | SAE feature events vs feature moments (§12): events per feature against firing counts, accumulated independently | equal for every layer-9 feature; 72.05 events per token, equal to L0 |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run | 48 of 48 pass |
+| Linear final-LayerNorm split of the logit difference (§13): features + bias + error + const against the logits | equal to 2e-5 |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens | 49 of 49 pass |
 
 **Cross-implementation**
 
@@ -603,13 +693,15 @@ group's checks and the calibration test with every run (notebook §11); the unit
 | --- | --- |
 | Plain HF backend vs TransformerLens bridge, 7 hook types × layers 0, 5, 11 (`tests/test_backends.py`) | agree within 2e-5 of the activation scale; a run over a subset of hooks stops only after the last one reached |
 | Full atlas, HF vs TransformerLens backend ([design doc](atlas-design.md#stage-1-status)) | statistics agree to ~1e-5 relative; 0.6% of top-k pointers swap among exact ties |
-| SAE pipeline vs TransformerLens's `HookedTransformer` (§11), every layer | residual stream within 3e-6 relative, per-token loss within 1e-4 |
+| SAE pipeline vs TransformerLens's `HookedTransformer` (§11), every layer including the final residual | residual stream within 1e-5 relative, per-token loss within 1e-4 |
+| Heads read and zero-ablated at `attn.c_proj` vs processed TransformerLens's `hook_z` (§13; `tests/test_backends.py`) | head outputs within 1e-5, losses under a zero ablation within 1e-4 |
 
 **External: published numbers**
 
 | Check | Result |
 | --- | --- |
 | Bloom's `gpt2-small-res-jb` SAEs vs the release post (§11) | L0 within 2.4%, alive features within 0.7 points, variance explained about the origin within 0.7 points, CE increase within the rounding of the post's clean CE |
+| ioi-hydra's head-level results on our HF backend (§13) | clean and ablated LD, direct effect lost, repair fraction and per-head responses reproduce to the reported precision |
 | Single SAE features vs Neuronpedia's dashboards (§12), 50 per layer | firing rates within a median ratio of 1.00–1.02, maxima 0.97, top tokens shared for a median 100%; the one outlier is a document-boundary feature |
 | Known features of GPT-2 small's residual stream (§1, §2) | outlier dimensions (480 early, 447 in the middle layers, 496 at the final residual) and large constant offsets, consistent with the outlier ("massive activation") dimensions reported for GPT-2 |
 
@@ -638,6 +730,8 @@ group's checks and the calibration test with every run (notebook §11); the unit
   special (§8).
 - **Covariance by position mixes in the position embedding.** A position bucket's covariance includes the variation
   between the positions inside it, so the effective dimension by position (§8) is only qualitative.
+- **One dictionary, one ablation for §13.** The IOI analysis uses a single SAE release and mean ablation only, and
+  before the final residual its LD attribution is a logit lens.
 - **The neuron basis.** Single neurons are often polysemantic, so a unit's top-10 contexts (as for L9/1000) may not
   name what it does. SAE bases are stage 2.
 - **Thin tails.** In the 1M-token atlases, rare units have fewer than about 100 examples; the deep scan (§7) covers
@@ -647,10 +741,11 @@ group's checks and the calibration test with every run (notebook §11); the unit
 
 ## Next
 
-Every stage 1 systematic is now measured, the gate into stage 2 passes, and the feature atlas has begun. From the [roadmap](atlas-design.md#roadmap):
+Every stage 1 systematic is now measured, the gate into stage 2 passes, and the first stage 2 question has an answer. From the [roadmap](atlas-design.md#roadmap):
 
-- **Stage 2, step 2:** do features at layers 9–11 change under name-mover ablation the way ioi-hydra's head-level
-  Hydra accounting predicts? The layer-9 events (§12) are the starting point.
+- **The IOI repair's dark matter (§13):** what the off-dictionary half of the logit difference is. A larger or differently
+  trained dictionary at the final residual (OpenAI's 32k / 128k), and the per-head writes into it.
+- **Systematics for §13:** zero and resample ablation, other templates and seeds, as in ioi-hydra.
 - **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
   feature basis.
 - **Follow-ups for stage 1:** a covariance within each position, to separate token content from position spread
