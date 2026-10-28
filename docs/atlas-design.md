@@ -88,7 +88,7 @@ Tokenizing takes about 1 min and export 9 s with either backend.
 
 ## Roadmap
 
-Stage 1 is finished at laptop scale: every stage 1 systematic in the table below is measured ([results](results.md)). The next step is the gate into stage 2, checking that a pretrained SAE reproduces its release's numbers on this pipeline. The pipeline is basis-independent, so everything fixed in stage 1 carries over to every dictionary.
+Stage 1 is finished at laptop scale: every stage 1 systematic in the table below is measured ([results](results.md)). The gate into stage 2 has passed: the pretrained SAEs reproduce their release's numbers on this pipeline. The next step is stage 2 itself. The pipeline is basis-independent, so everything fixed in stage 1 carries over to every dictionary.
 
 ![Atlas roadmap: 4 stages, 3 gates](figures/atlas_roadmap.svg)
 
@@ -96,7 +96,7 @@ Each stage reuses the same tokenize → run → export pipeline and only adds ac
 
 ## Systematics and validation plan
 
-Atlas numbers are measurements conditional on a corpus, a convention and a dictionary; each of those is a systematic, reported as a spread next to the statistical error, as in ioi-hydra.
+Atlas numbers are measurements conditional on a corpus, a convention and a dictionary; each of those is a systematic, reported as a spread next to the statistical error, as in ioi-hydra. The sizes measured so far are summarized in [results: systematic uncertainties](results.md#10-systematic-uncertainties).
 
 | Source | How we vary it | Applies from |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 | SAE reconstruction error | report the unexplained variance ("dark matter") beside every feature-level claim | stage 2 |
 | SAE seed | two trainings differing only in seed | stage 3 |
 
-**Gates before trusting a pretrained SAE.** On our own pipeline, its variance explained, CE loss recovered, L0 and dead-feature fraction must match the release's reported numbers. A mismatch means a convention differs (hook name, LayerNorm folding, BOS handling), and the SAE's outputs would be quietly meaningless.
+**Gates before trusting a pretrained SAE.** On our own pipeline, its variance explained, CE loss recovered, L0 and dead-feature fraction must match the release's reported numbers. A mismatch means a convention differs (hook name, LayerNorm folding, BOS handling), and the SAE's outputs would be quietly meaningless. Done for `gpt2-small-res-jb` (`python/sae_gate.py`, `run-sae-gate`): at every layer L0, alive features, variance explained and the CE increase match the release post's table, and our activations match TransformerLens's to 10⁻⁶ ([results](results.md#11-the-gate-into-stage-2)). Compare with the release's own publication: SAELens's built-in reference values for this release are rough, and the post computes variance explained about the origin rather than the mean.
 
 **Regression checks on every run.** Pointers must reproduce on recompute for a random sample of top-k entries, and residual outlier dimensions must stay stable across shards.
 

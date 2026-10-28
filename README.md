@@ -25,6 +25,7 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
     python -m atlas run DIR --positions      # also statistics per position bucket (positions.parquet)
     jupyter lab notebooks/atlas.ipynb        # explore: residual geometry, neuron stats, errors, top contexts
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
+    run-sae-gate                             # stage 2 gate: pretrained SAEs vs their release's metrics, ~40 min
     python -c "import duckdb; duckdb.sql(\"select value, context from 'results/atlas/topk.parquet' where kind='post' and layer=9 and unit=1000 order by rank\").show()"
     pytest tests                             # exact merging; HF backend == TransformerLens bridge (~10 s)
 
@@ -37,6 +38,8 @@ The steps can also run separately, e.g. shards on different machines: `python -m
     notebooks/atlas.ipynb       exploration: residual geometry, neuron statistics, errors, single neurons
     scripts/run-atlas           pipeline end to end
     scripts/run-notebook        headless notebook execution, in place
+    python/sae_gate.py          the gate into stage 2: SAELens SAEs on our pipeline (CLI: python -m sae_gate)
+    scripts/run-sae-gate        the gate end to end
     tests/                      exact merging and bootstrap; HF backend matches TransformerLens
     docs/atlas-design.md        design doc; figures in docs/figures/
     docs/results.md             initial results; its figures are written by the notebook (run-notebook)

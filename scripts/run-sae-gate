@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The gate into stage 2: run a pretrained SAE release on an atlas's tokens and compare its metrics with the release's.
+#     run-sae-gate                                   # gpt2-small-res-jb on results/atlas -> results/sae-gate, ~40 min
+#     run-sae-gate results/atlas results/sae-gate --layers 0,6,10
+# All options: python -m sae_gate --help
+set -euo pipefail
+: "${PROJECT_PATH:?source setup.sh first}"
+atlas="${1:-${PROJECT_PATH}/results/atlas}"
+out="${2:-${PROJECT_PATH}/results/sae-gate}"
+python -m sae_gate "${atlas}" --out "${out}" "${@:3}"
