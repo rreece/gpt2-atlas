@@ -62,6 +62,43 @@ To reproduce: `source setup.sh`, then `run-atlas` (OpenWebText into `results/atl
 `run-notebook`, which runs `notebooks/atlas.ipynb` headless, in place, and writes every figure here into
 `docs/figures/`. The FineWeb and code atlases here were built with 2 files, before the default became 8.
 
+## Systematic uncertainties
+
+Every systematic measured so far, ranked by size. Sizes are median shifts of a unit's mean over all units, in units of
+that unit's spread (std), unless noted.
+
+| Source | How measured | Typical size | Relative to the statistical error | Verdict |
+| --- | --- | --- | --- | --- |
+| [Corpus: Python code](#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code) | code vs OpenWebText, 1M tokens each | 0.17 (MLP), 0.26 (residual); firing rates change by a factor of ~2.2 | ~100× | Dominant: a different regime, with effective dimension ~25 against ~170 |
+| [Position: the first ~7 tokens](#8-position-and-context-length) | positions 1–7 vs 32–127, 512-token atlas | 0.08 (MLP), 0.17 (residual) | 7–14× its floor | Large: layer 1 fires on 5% of tokens at position 1 and 29% from 16 on; offsets are largest at position 1 |
+| [Corpus: FineWeb](#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code) | FineWeb vs OpenWebText | 0.028–0.045 | 14–18× | Real but modest: web text against web text |
+| [Position: late (256–511)](#8-position-and-context-length) | positions 256–511 vs 32–127 | 0.018 (MLP), 0.058 (residual) | 3.5–10× its floor | Small, mostly in the residual stream |
+| [Long-document selection](#8-position-and-context-length) | documents of ≥511 vs ≥127 tokens, positions 1–127 | ~0.01 | under 2× | Near noise: the 128-token results carry over |
+| [Statistical](#5-errors-statistical-and-file-to-file) | bootstrap over shards | **0.002** on a mean; 0.005 relative on a std; 0.007 relative on a firing rate | — | The reference scale |
+| [File to file, within a corpus](#5-errors-statistical-and-file-to-file) | cluster bootstrap over files; the 50M-token deep scan | ≤ 0.0003 per file | adds 2–6% to the error | Negligible at this scale, and included in `*_err` |
+| [Centering the residual stream](#9-dependence-on-centering-the-residual-stream) | raw vs TransformerLens-centered residuals | MLP: 0 exactly; residual: ≤ 0.1% of the variance, means move by ≤ 0.2 | — | Negligible for GPT-2 small |
+| Backend: HF vs TransformerLens bridge ([design doc](atlas-design.md#stage-1-status)) | every hook; the full atlas | 2×10⁻⁵ of the activation scale; atlas statistics agree to ~10⁻⁵ relative | — | Negligible; 0.6% of top-k pointers swap among exact ties |
+| SAE pipeline conventions (§10 to come) | our HF pipeline vs TransformerLens's `HookedTransformer` | 10⁻⁶ (residual stream), 10⁻⁴ (per-token loss) | — | Negligible |
+| Histogram subsampling ([design doc](atlas-design.md#stage-1-status)) | every 4th token vs every token | p99 quantiles move by a median 0.02 std (0.13 for the worst 1% of units) | — | Affects quantiles only |
+
+The position rows compare one position bucket with another, so their floor is the error of a bucket (0.005–0.012 of
+a unit's spread), not of the whole atlas (0.002).
+
+**In short.** The atlas is precise: a unit's mean is known to about 0.2% of its spread, and every implementation choice
+(backend, residual centering, merge arithmetic, which files of a corpus are read) sits well below that. What the
+numbers mean depends on the data: the corpus (3–4% of a unit's spread for other web text, about 20% for code) and the
+first ~16 positions of context move statistics 10–100× more than the statistical error. So a statement such as "neuron
+X has mean m" should carry its statistical error and its conditions, "on OpenWebText, positions 1–127". Past position
+~16, and for longer documents, those conditions matter much less.
+
+**Not yet measured.**
+
+- **Context beyond 511 tokens.** GPT-2 goes to 1024.
+- **The row layout.** Rows put a BOS before a window that starts mid-document, unlike GPT-2's training windows; that
+  may be part of why the first positions look special.
+- **Covariance within each position.** Effective dimension by position (§8) is only qualitative so far.
+- **Everything SAE-specific.** The choice of dictionary, and the reconstruction error ("dark matter"), are stage 2.
+
 ## 1. Residual-stream geometry
 
 ![Total variance, effective dimension and cumulative variance by layer](figures/results_resid_geometry.png)
