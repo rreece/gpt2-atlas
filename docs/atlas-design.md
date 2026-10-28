@@ -96,7 +96,7 @@ Each stage reuses the same tokenize → run → export pipeline and only adds ac
 
 ## Systematics and validation plan
 
-Atlas numbers are measurements conditional on a corpus, a convention and a dictionary; each of those is a systematic, reported as a spread next to the statistical error, as in ioi-hydra. The sizes measured so far are summarized in [results: systematic uncertainties](results.md#systematic-uncertainties).
+Atlas numbers are measurements conditional on a corpus, a convention and a dictionary; each of those is a systematic, reported as a spread next to the statistical error, as in ioi-hydra. The sizes measured so far are summarized in [results: systematic uncertainties](results.md#10-systematic-uncertainties).
 
 | Source | How we vary it | Applies from |
 | --- | --- | --- |
