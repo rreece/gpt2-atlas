@@ -103,7 +103,7 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 | Statistical (finite tokens) | bootstrap over shards, resampled within each file, corrected for the few shards per file (done: 16 shards in 8 files) | stage 1 |
 | File to file, within a corpus | cluster bootstrap over files, the total error `*_err` (done: 8 OpenWebText files). The 50M-token deep scan bounds the term at about 0.0003 of a unit's spread, adding 2–6% to the error; an earlier two-file estimate overstated it 5–10× ([results](results.md#5-errors-statistical-and-file-to-file)) | stage 1 |
 | Corpus | OpenWebText vs FineWeb vs Python code (done): typical per-unit shifts 12–15× the file-to-file floor for FineWeb and 77–117× for code; offset dimensions and rarely-firing neurons are the same on all three ([results](results.md#6-corpus-systematic-openwebtext-vs-fineweb-vs-python-code)) | stage 1 |
-| Context length and position | seq_len 128 vs. 512; statistics split by position bucket | stage 1 |
+| Context length and position | 512-token windows with statistics per position bucket (done: `run --positions`). Position matters most in the first ~16 positions; later positions and long documents differ little ([results](results.md#8-position-and-context-length)). Covariance within each position is still open | stage 1 |
 | Processing convention | compatibility mode on vs. raw HF weights (affects residual statistics only) | stage 1 |
 | SAE dictionary | Bloom 24k vs. OpenAI 32k / 128k on the same layer: feature splitting and matching | stage 2 |
 | SAE reconstruction error | report the unexplained variance ("dark matter") beside every feature-level claim | stage 2 |

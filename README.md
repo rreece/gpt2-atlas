@@ -22,6 +22,7 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
 
     run-atlas                                # 1M tokens from 8 files -> results/atlas/*.parquet, ~10 min on an M4
     run-atlas results/atlas-fineweb 1e6 fineweb   # same for FineWeb; `code` for Python (codeparrot-clean)
+    python -m atlas run DIR --positions      # also statistics per position bucket (positions.parquet)
     jupyter lab notebooks/atlas.ipynb        # explore: residual geometry, neuron stats, errors, top contexts
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
     python -c "import duckdb; duckdb.sql(\"select value, context from 'results/atlas/topk.parquet' where kind='post' and layer=9 and unit=1000 order by rank\").show()"
@@ -49,5 +50,6 @@ This project grew out of [ioi-hydra](https://github.com/rreece/ioi-hydra), a one
 Read more about my [research here](http://rreece.github.io/research/).
 
 
-2026/10/26        
-Ryan Reece
+Ryan Reece      
+2026/10/26
+

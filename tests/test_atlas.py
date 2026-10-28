@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from atlas import (BOS, Atlas, default_hooks, Covariance, Histogram, Moments, TopK, asinh_edges, bootstrap_weights, hist_mask,
+from atlas import (BOS, POS_EDGES, Atlas, BucketCovariance, BucketMoments, default_hooks, Covariance, Histogram, Moments, TopK, asinh_edges, bootstrap_weights, hist_mask,
                    pooled_cov_summaries, pooled_moments, select_hooks, bootstrap_scale, hook_order, shard_ranges, spread_rows,
                    tokenize)
 
@@ -73,15 +73,15 @@ def test_histogram_counts_and_quantiles(x):
     np.testing.assert_allclose(q, ref, rtol=0.06)
 
 
-@pytest.mark.parametrize("stride", [1, 4])
-def test_atlas_state_round_trip_and_merge(x, tmp_path, stride):
+@pytest.mark.parametrize("stride,positions", [(1, False), (4, False), (4, True)])
+def test_atlas_state_round_trip_and_merge(x, tmp_path, stride, positions):
     hooks = {"blocks.0.mlp.hook_post": 7, "blocks.0.hook_resid_pre": 7}
     act = x[:4800].reshape(48, 100, 7)  # [B, T, d]
     index = (torch.arange(48)[:, None] * 100 + torch.arange(1, 100)).flatten()
 
     # Split at row 7: 7 * 99 tokens is not a multiple of the stride, so the subsample must not depend on batching.
-    whole = Atlas(hooks, k=3, hist_stride=stride)
-    a, b = Atlas(hooks, k=3, hist_stride=stride), Atlas(hooks, k=3, hist_stride=stride)
+    whole = Atlas(hooks, k=3, hist_stride=stride, positions=positions)
+    a, b = (Atlas(hooks, k=3, hist_stride=stride, positions=positions) for _ in range(2))
     for name in hooks:
         whole.update(name, act, index)
         a.update(name, act[:7], index[: 7 * 99])
@@ -104,6 +104,42 @@ def test_atlas_state_round_trip_and_merge(x, tmp_path, stride):
     # Position 0 (BOS) is excluded; histograms see 1 in `stride` of the remaining tokens.
     assert whole.acc["blocks.0.mlp.hook_post"]["moments"].n == 48 * 99
     assert whole.acc["blocks.0.mlp.hook_post"]["hist"].counts.sum(1).eq(-(-48 * 99 // stride)).all()
+
+
+def test_bucket_moments_and_covariance_match_direct_and_merge():
+    g = torch.Generator().manual_seed(1)
+    act = 50 + torch.randn(12, 40, 3, generator=g) * torch.tensor([0.1, 1.0, 10.0])  # [B, T, d], offset like the residual
+    act[:, :, 1] += torch.arange(40.0)  # position-dependent, so buckets differ
+    whole, a, b = BucketMoments(3), BucketMoments(3), BucketMoments(3)
+    whole.update(act)
+    a.update(act[:5])
+    b.update(act[5:])
+    a.merge(b)
+    cw, ca, cb = BucketCovariance(3), BucketCovariance(3), BucketCovariance(3)
+    cw.update(act)
+    ca.update(act[:5])
+    cb.update(act[5:])
+    ca.merge(cb)
+    for j, (lo, hi) in enumerate(zip(POS_EDGES[:-1], POS_EDGES[1:])):
+        x = act[:, lo:min(hi, 40)].reshape(-1, 3).double()
+        for m in (whole, a):
+            if lo >= 40:
+                assert m.n[j] == 0
+                continue
+            assert m.n[j] == len(x)
+            torch.testing.assert_close(m.mean[j], x.mean(0))
+            torch.testing.assert_close(m.m2[j] / m.n[j], x.var(0, unbiased=False), rtol=1e-5, atol=1e-8)
+            torch.testing.assert_close(m.max[j], x.max(0).values)
+            assert torch.equal(m.n_pos[j], (x > 0).sum(0))
+    for j, (lo, hi) in enumerate(zip(cw.edges[:-1], cw.edges[1:])):
+        for c in (cw, ca):
+            if lo >= 40:
+                assert c.n[j] == 0
+                continue
+            x = act[:, lo:min(hi, 40)].reshape(-1, 3).double().numpy()
+            # Batches are reduced in float32: about 1e-5 relative here, where values sit near 50 with spreads of 0.1-10.
+            np.testing.assert_allclose(c.cov[j].numpy(), np.cov(x, rowvar=False, bias=True), rtol=1e-4, atol=1e-5)
+    torch.testing.assert_close(ca.c, cw.c, rtol=1e-4, atol=1e-3)  # split + merge == whole, to float32 rounding
 
 
 def test_hist_mask_cycles_through_positions():
