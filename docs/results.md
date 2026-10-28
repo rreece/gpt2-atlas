@@ -17,7 +17,8 @@
 - [8. Position and context length](#8-position-and-context-length)
 - [9. Dependence on centering the residual stream](#9-dependence-on-centering-the-residual-stream)
 - [10. Systematic uncertainties](#10-systematic-uncertainties)
-- [11. Validation](#11-validation)
+- [11. The gate into stage 2](#11-the-gate-into-stage-2)
+- [12. Validation](#12-validation)
 - [Caveats](#caveats)
 - [Next](#next)
 
@@ -53,6 +54,8 @@ the last processing convention.
   position. Beyond about position 16, statistics change little out to 511, and long documents look like the rest.
 - **Centering the residual stream changes almost nothing.** Raw (uncentered) residuals differ from the TransformerLens
   convention only along the all-ones direction, which carries at most 0.1% of the variance; MLP neurons are identical.
+- **The gate into stage 2 passes.** Bloom's pretrained residual SAEs reproduce their release's L0, alive features,
+  variance explained and CE loss on this pipeline, and our activations match TransformerLens's to 10⁻⁶.
 - **Every stored exemplar reproduces.** Recomputing sampled top- and bottom-k pointers returns the stored values to
   2e-6 relative.
 
@@ -440,7 +443,7 @@ that unit's spread (std), unless noted.
 | [File to file, within a corpus](#5-errors-statistical-and-file-to-file) | cluster bootstrap over files; the 50M-token deep scan | ≤ 0.0003 per file | adds 2–6% to the error | Negligible at this scale, and included in `*_err` |
 | [Centering the residual stream](#9-dependence-on-centering-the-residual-stream) | raw vs TransformerLens-centered residuals | MLP: 0 exactly; residual: ≤ 0.1% of the variance, means move by ≤ 0.2 | — | Negligible for GPT-2 small |
 | Backend: HF vs TransformerLens bridge ([design doc](atlas-design.md#stage-1-status)) | every hook; the full atlas | 2×10⁻⁵ of the activation scale; atlas statistics agree to ~10⁻⁵ relative | — | Negligible; 0.6% of top-k pointers swap among exact ties |
-| SAE pipeline conventions (gate section to come) | our HF pipeline vs TransformerLens's `HookedTransformer` | 10⁻⁶ (residual stream), 10⁻⁴ (per-token loss) | — | Negligible |
+| [SAE pipeline conventions](#11-the-gate-into-stage-2) | our HF pipeline vs TransformerLens's `HookedTransformer` | 10⁻⁶ (residual stream), 10⁻⁴ (per-token loss) | — | Negligible |
 | Histogram subsampling ([design doc](atlas-design.md#stage-1-status)) | every 4th token vs every token | p99 quantiles move by a median 0.02 std (0.13 for the worst 1% of units) | — | Affects quantiles only |
 
 The position rows compare one position bucket with another, so their floor is the error of a bucket (0.005–0.012 of
@@ -461,12 +464,79 @@ X has mean m" should carry its statistical error and its conditions, "on OpenWeb
 - **Covariance within each position.** Effective dimension by position (§8) is only qualitative so far.
 - **Everything SAE-specific.** The choice of dictionary, and the reconstruction error ("dark matter"), are stage 2.
 
-## 11. Validation
+## 11. The gate into stage 2
+
+A pretrained SAE's features only mean something if our activations are the ones it was trained on: same hook point,
+same processing convention, same BOS and context handling. The gate checks this before stage 2 uses any features. It
+runs Joseph Bloom's `gpt2-small-res-jb` SAEs (24,576 features at each residual `hook_resid_pre`, layers 0–11) on
+254,000 tokens per layer of the default atlas (250 rows from each of its 8 files), through our HF backend, and
+compares the metrics with the
+[release post](https://www.lesswrong.com/posts/f9EgfLSurAiqRJySD/open-source-sparse-autoencoders-for-all-residual-stream):
+
+    run-sae-gate   # = python -m sae_gate results/atlas --out results/sae-gate; about 40 min on an M4
+
+The SAEs' own metadata already matches this pipeline: trained on OpenWebText with 128-token contexts, a prepended BOS,
+and centered writing weights, the convention of §9. The metrics follow SAELens's definitions (`sae_lens.evals`):
+
+- **L0**: nonzero features per token, without BOS.
+- **Variance explained**, centered: 1 − E‖x − x̂‖² / (E‖x‖² − ‖E x‖²), SAELens's current definition; and about the
+  origin, 1 − E‖x − x̂‖² / E‖x‖², as the release post computed it.
+- **CE loss**: next-token cross-entropy with the reconstruction spliced in everywhere but BOS. The CE loss score is
+  (CE_zero − CE_sae) / (CE_zero − CE_clean), with the zero ablation at every position.
+- **Alive features**: features that fire at least once on these tokens.
+
+![The gate: L0, variance explained and CE loss against the release post](figures/results_sae_gate.png)
+
+| Layer | L0 (post) | Alive (post) | Variance explained, centered | About the origin (post) | CE increase (post) | CE loss score |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 12.4 (12.24) | 79.3% (80.0%) | 97.8% | VE0 (99.15%) | 0.020 (0.02) | 0.999 |
+| 1 | 14.7 (14.68) | 83.1% (83.4%) | 95.0% | VE1 (98.37%) | 0.018 (0.03) | 0.996 |
+| 2 | 18.7 (18.80) | 79.6% (80.0%) | 94.3% | VE2 (98.07%) | 0.064 (0.07) | 0.987 |
+| 3 | 26.0 (25.75) | 86.3% (86.3%) | 92.0% | VE3 (96.97%) | 0.155 (0.18) | 0.985 |
+| 4 | 33.3 (33.14) | 97.7% (97.7%) | 90.1% | VE4 (95.77%) | 0.122 (0.14) | 0.992 |
+| 5 | 44.1 (43.61) | 99.7% (99.7%) | 88.8% | VE5 (94.90%) | 0.138 (0.15) | 0.989 |
+| 6 | 50.6 (49.68) | 99.9% (100%) | 87.5% | VE6 (93.90%) | 0.138 (0.14) | 0.987 |
+| 7 | 58.3 (57.29) | 100% (100%) | 86.4% | VE7 (93.08%) | 0.147 (0.15) | 0.985 |
+| 8 | 66.5 (65.47) | 100% (100%) | 85.5% | VE8 (92.57%) | 0.150 (0.15) | 0.981 |
+| 9 | 72.1 (71.10) | 100% (100%) | 84.5% | VE9 (92.05%) | 0.156 (0.15) | 0.989 |
+| 10 | 55.1 (53.79) | 100% (100%) | 81.3% | VE10 (91.12%) | 0.202 (0.22) | 0.976 |
+| 11 | 60.3 (59.16) | 99.8% (100%) | 81.3% | VE11 (93.30%) | 0.234 (0.27) | 0.965 |
+
+The CE increase is CE_sae − CE_clean in nats per token; the post's is its CE with the SAE minus a clean CE it gives
+only as "3.3", so it is uncertain by about ±0.05. Bootstrap errors over files are at most 0.13 on L0, 0.05 points on
+variance explained and 0.0003 on the CE loss score.
+
+**The gate passes.**
+
+- **Conventions agree exactly.** On 32 rows per layer, our HF pipeline reproduces the residual stream of
+  TransformerLens's `HookedTransformer`, loaded as SAELens recommends, to 3×10⁻⁶ relative, and its per-token losses
+  to 10⁻⁴.
+- **Every release metric matches.** L0 agrees with the post within 2.4% at every layer, alive features within 0.7
+  points, variance explained about the origin within PENDING points, and the CE increase within the rounding of the
+  post's clean CE.
+- **SAELens's built-in reference values for this release are rough.** Its `expected_l0` (10, 10, 18, 23, …) and
+  `expected_var_explained` (0.999, 0.9, 0.77 in three tiers) are hand-entered approximations; the post's table is the
+  reference to use.
+
+Two differences, both understood:
+
+- **Centered variance explained is 1–12 points lower than the post's.** The post divides by E‖x‖², which includes the
+  residual stream's large constant offsets (§2). The SAE reconstructs those almost for free with its decoder bias, so
+  the gap grows with depth as the offsets do. The centered value is the more honest measure of how much of the
+  stream's variation the SAE captures: 98% at layer 0, falling to 81% at layers 10–11.
+- **Our clean CE is 3.50, against the post's 3.3.** The absolute loss depends on the evaluation text: our rows are a
+  BOS plus a window starting mid-document, so early positions have little context. The increase from splicing in the
+  SAE, which is what the gate tests, agrees.
+
+With the gate passed, stage 2 can use these SAEs on this pipeline: feature atlases in the SAE basis, with the same
+accumulators.
+
+## 12. Validation
 
 | Check | Result |
 | --- | --- |
 | Pointers reproduce: 12 random top- and bottom-k entries recomputed from `(row, pos)` | all match, worst relative difference 2.1e-6 |
-| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap, the uncentered backend | 46 of 46 pass |
+| Unit tests: exact merging for every accumulator (split vs. whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap, the uncentered backend, the SAE gate's splicing hook | 47 of 47 pass |
 | Plain HF backend vs. TransformerLens bridge | agree within 2e-5 of the activation scale at every hook (see design doc); a run over a subset of hooks stops only after the last one reached; the uncentered backend differs only by each token's mean over d_model |
 
 ## Caveats
@@ -488,9 +558,8 @@ X has mean m" should carry its statistical error and its conditions, "on OpenWeb
 
 ## Next
 
-Every stage 1 systematic is now measured. From the [roadmap](atlas-design.md#roadmap):
+Every stage 1 systematic is now measured, and the gate into stage 2 passes. From the [roadmap](atlas-design.md#roadmap):
 
-- **The gate into stage 2:** check that a pretrained SAE reproduces its release's variance explained, CE loss
-  recovered, L0 and dead-feature fraction on this pipeline, before any feature-level work.
+- **Stage 2:** feature atlases in the SAE basis, with the same accumulators, now that the gate has passed (§11).
 - **Follow-ups for stage 1:** a covariance within each position, to separate token content from position spread
   (§8); deep scans of the 10 silent candidates in layers 3–6, and of code for the code-specific neurons.

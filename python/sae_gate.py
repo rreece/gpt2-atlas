@@ -8,7 +8,9 @@ backend, the metrics every release reports, with SAELens's definitions (sae_lens
 - Variance explained: 1 - E||x - x_hat||^2 / (E||x||^2 - ||E x||^2) over tokens, BOS excluded.
 - CE loss score: (CE_zero - CE_sae) / (CE_zero - CE_clean), next-token loss over every position, with the
   reconstruction spliced in at every position but BOS and the zero ablation at every position.
-- Dead fraction: features that never fire on the tokens seen (not a release metric; depends on the sample size).
+- Variance explained about the origin, 1 - E||x - x_hat||^2 / E||x||^2, as the release post computed it. It credits the
+  SAE for the residual stream's large constant offsets, so it runs higher than the centered value.
+- Dead fraction: features that never fire on the tokens seen (it depends on the sample size).
 
 Everything is summed per corpus file, so errors come from the same cluster bootstrap over files as the atlas. On a
 subset of the same tokens it also recomputes the residual stream, the features and the per-token losses with
@@ -30,6 +32,20 @@ import torch
 from atlas import HFGPT2, bootstrap_scale, default_device, git_commit, row_files
 
 torch.set_grad_enabled(False)
+
+# Per-layer metrics from the release post of gpt2-small-res-jb (Joseph Bloom, 2024), for layers 0-11. Its variance
+# explained is about the origin (1 - MSE / E||x||^2), not about the mean, and its clean CE is given only as "3.3".
+# SAELens's own reference values for this release (expected_l0, expected_var_explained) are rough.
+REFERENCES = {
+    "gpt2-small-res-jb": {
+        "source": "https://www.lesswrong.com/posts/f9EgfLSurAiqRJySD/open-source-sparse-autoencoders-for-all-residual-stream",
+        "l0": [12.24, 14.68, 18.80, 25.75, 33.14, 43.61, 49.68, 57.29, 65.47, 71.10, 53.79, 59.16],
+        "var_explained_origin": [.9915, .9837, .9807, .9697, .9577, .9490, .9390, .9308, .9257, .9205, .9112, .9330],
+        "alive_frac": [.800, .834, .800, .863, .977, .997, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "ce_sae": [3.32, 3.33, 3.37, 3.48, 3.44, 3.45, 3.44, 3.45, 3.45, 3.45, 3.52, 3.57],
+        "ce_clean": 3.3,
+    },
+}
 
 
 def load_sae(release: str, sae_id: str, device):
@@ -115,7 +131,8 @@ def metrics(accs: list[dict], weights=None) -> dict:
                                                                "ce_clean", "ce_sae", "ce_zero")}
     total_var = s["sum_sq"] / s["n"] - float((s["sum_x"] / s["n"]).pow(2).sum())
     ce = {k: s[k] / s["n_ce"] for k in ("ce_clean", "ce_sae", "ce_zero")}
-    return {"l0": s["sum_l0"] / s["n"], "var_explained": 1 - (s["sum_sq_resid"] / s["n"]) / total_var, **ce,
+    return {"l0": s["sum_l0"] / s["n"], "var_explained": 1 - (s["sum_sq_resid"] / s["n"]) / total_var,
+            "var_explained_origin": 1 - s["sum_sq_resid"] / s["sum_sq"], **ce,
             "ce_score": (ce["ce_zero"] - ce["ce_sae"]) / (ce["ce_zero"] - ce["ce_clean"])}
 
 
@@ -171,7 +188,7 @@ def main(argv=None):
     rows_by_file = {int(f): np.flatnonzero(files == f)[: args.rows_per_file] for f in np.unique(files)}
     model = HFGPT2(args.device)
     rng = np.random.default_rng(0)
-    out = []
+    out, fires_all = [], []
     for layer in layers:
         t0 = time.time()
         sae_id = f"blocks.{layer}.hook_resid_pre"
@@ -196,19 +213,25 @@ def main(argv=None):
                **{f"{k}_err": float(np.std([r[k] for r in reps]) * scale) for k in m},
                "dead_frac": float((fires == 0).float().mean()),
                "l0_expected": release.expected_l0.get(sae_id), "var_explained_expected": release.expected_var_explained.get(sae_id),
+               **{f"post_{k}": (v if np.isscalar(v) else v[layer]) for k, v in REFERENCES.get(args.release, {}).items()
+                  if k != "source" and (np.isscalar(v) or layer < len(v))},
                "sae_hook": meta.hook_name, "sae_dataset": meta.dataset_path, "sae_context_size": meta.context_size,
                "sae_prepend_bos": meta.prepend_bos, "sae_processing": json.dumps(meta.model_from_pretrained_kwargs), **check}
         out.append(row)
-        print(f"layer {layer:2d}: L0 {m['l0']:6.1f} ± {row['l0_err']:.1f} (expected {row['l0_expected']}), "
-              f"var. explained {m['var_explained']:.3f} ± {row['var_explained_err']:.3f} (expected {row['var_explained_expected']}), "
+        print(f"layer {layer:2d}: L0 {m['l0']:6.1f} ± {row['l0_err']:.1f} (post {row.get('post_l0')}), "
+              f"var. explained {m['var_explained']:.3f} ± {row['var_explained_err']:.3f}, about the origin {m['var_explained_origin']:.3f} "
+              f"(post {row.get('post_var_explained_origin')}), "
               f"CE score {m['ce_score']:.3f} ± {row['ce_score_err']:.3f}, dead {row['dead_frac']:.1%}; "
               f"TL check: resid {check['tl_resid_max_rel_diff']:.1e}, CE {check['tl_ce_max_abs_diff']:.1e}  ({time.time() - t0:.0f}s)")
+        fires_all.append(fires.numpy())
         del sae
     df = pd.DataFrame(out)
     df.to_parquet(args.out / "gate.parquet", index=False)
+    np.savez(args.out / "fires.npz", layers=np.array(layers), fires=np.stack(fires_all), n_tokens=df.n_tokens.to_numpy())
     (args.out / "manifest.json").write_text(json.dumps({
         "atlas": str(args.atlas), "release": args.release, "layers": layers, "rows_per_file": args.rows_per_file,
-        "check_rows": args.check_rows, "git_commit": git_commit(), "created": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=2) + "\n")
+        "check_rows": args.check_rows, "reference": REFERENCES.get(args.release, {}).get("source"),
+        "git_commit": git_commit(), "created": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=2) + "\n")
     print(f"-> {args.out / 'gate.parquet'}")
 
 
