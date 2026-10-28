@@ -7,9 +7,8 @@ laptop-sized: 1M OpenWebText tokens from ~8k documents in about 5 minutes on an 
 
 **Design: [docs/atlas-design.md](docs/atlas-design.md)** · **Results: [docs/results.md](docs/results.md)**
 
-Grew out of [ioi-hydra](https://github.com/rreece/ioi-hydra), a one-day study of self-repair in GPT-2 small's
-IOI circuit; moved here on 2026-10-26.
 
+![MLP neuron activation statistics in GPT2 with OpenWebText data.](docs/figures/results_mlp_neurons.png)
 
 ## Setup
 
@@ -21,7 +20,7 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
 
 ## Run
 
-    run-atlas                                # 1M tokens -> results/atlas/*.parquet, ~5 min on an M4
+    run-atlas                                # 1M tokens from 8 files -> results/atlas/*.parquet, ~10 min on an M4
     run-atlas results/atlas-fineweb 1e6 fineweb   # same for FineWeb; `code` for Python (codeparrot-clean)
     jupyter lab notebooks/atlas.ipynb        # explore: residual geometry, neuron stats, errors, top contexts
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
@@ -41,6 +40,13 @@ The steps can also run separately, e.g. shards on different machines: `python -m
     docs/atlas-design.md        design doc; figures in docs/figures/
     docs/results.md             initial results; its figures are written by the notebook (run-notebook)
     docs/vllm-monitoring-ideas-2026-10-21.txt   notes on activation monitoring in live vLLM serving (out of scope here)
+
+
+## See also
+
+This project grew out of [ioi-hydra](https://github.com/rreece/ioi-hydra), a one-day study of self-repair in GPT-2 small's IOI circuit.
+
+Read more about my [research here](http://rreece.github.io/research/).
 
 
 2026/10/26        
