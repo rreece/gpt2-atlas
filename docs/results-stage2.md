@@ -35,6 +35,10 @@ position systematics and its validation, is in [results-stage1.md](results-stage
   the repair landing off-dictionary. The answer is carried mostly by "say this name" features, about four per name,
   and the off-dictionary rest is written by the circuit's own heads. All of this holds across ablation methods,
   prompt sets and templates (§3).
+- **The SAEs miss the LD because it lives in a minor direction.** The off-dictionary part of the final residual is
+  only 2.5–3.1% of its squared norm but carries 26–42% of the LD, not because it is strongly aimed at the logit
+  direction but because that direction carries little of the stream's norm. It raises both names' logits, IO more,
+  and is structured but not one missing feature (§3).
 
 The caveats are listed at the end.
 
@@ -349,8 +353,47 @@ biases' writes. The rest of the error lies inside the span, from coefficients th
 - **Under the ablation the balance shifts, not the mechanism.** The name movers' off-span part vanishes with them, the
   released brake's −0.89 goes with it, and the backups add theirs, for a net change of +0.35 (Bloom) or +0.15 (128k)
   logits outside the span.
-- **What the off-span direction is remains open.** Each head writes a large, consistent share of its IO-name signal
-  outside even the 128k dictionary's active features; why the dictionaries do not capture it is the next question.
+
+**What the off-dictionary part is.** Why do the SAEs miss a quarter of the LD? Two hypotheses, at the final residual of
+the clean run. (1) It is small but aimed at the logit direction d: SAEs minimize reconstruction error, so a write small
+in norm but aligned with d costs them little while moving the LD a lot. (2) It is one shared direction the
+dictionaries lack. For each circuit head and for the whole stream, compare the off-span part's share of the squared
+norm with its share of the LD, its cosine with d against a random direction in the same complement, and its principal
+components across prompts against those of random vectors in the same complements.
+
+![The off-span part: share of the squared norm against share of the LD, and its principal components](figures/results_ioi_offspan.png)
+
+| Outside the active span, clean | Bloom 24k | OpenAI 32k | OpenAI 128k |
+| --- | --- | --- | --- |
+| Circuit heads: share of the write's squared norm | 61–78% | 74–88% | 70–82% |
+| … share of the head's LD | 38–44% | 58–68% | 35–46% |
+| … cosine with d, off-span / in-span (name movers; brakes negative) | 0.04–0.15 / 0.12–0.27 | 0.07–0.21 / 0.09–0.20 | 0.04–0.14 / 0.13–0.30 |
+| Whole stream: share of the squared norm | 2.5% | 3.1% | 2.6% |
+| … share of the LD [95%] | 27% [19%, 36%] | 42% [33%, 50%] | 26% [14%, 36%] |
+| … cosine with d, off-span / in-span / random | 0.043 / 0.020 / 0.031 | 0.061 / 0.016 / 0.034 | 0.039 / 0.020 / 0.029 |
+| … raises the IO logit / the S logit by | +1.64 / +0.72 | +2.84 / +1.44 | +1.27 / +0.41 |
+| … variance in the top 1 / 5 / 20 principal components (random: 2% / 8% / 27%) | 7% / 26% / 59% | 8% / 27% / 61% | 7% / 28% / 61% |
+
+The heads are 9.9, 9.6, 10.0 (name movers) and 10.7, 11.10 (brakes); the LD shares are ratios of totals over the 128
+prompts, with bootstrap intervals over prompts; the random cosine is the root-mean-square cosine of a random direction
+in each prompt's complement.
+
+- **Per head, the off-span part is most of the write but not the aimed part.** Each circuit head writes 61–88% of its
+  squared norm outside the active span, but only 35–68% of its LD. That part is above a random direction in its
+  alignment with d but less aligned than the in-span part (about equally in the 32k dictionary). Hypothesis (1) is
+  false head by head.
+- **For the whole stream, the off-span part is small and carries a large share of the LD.** The heads' off-span
+  writes largely cancel in norm but not in LD: 2.5–3.1% of the squared norm (16–18% of the norm) carries 26–42% of the
+  LD. This is not because it is strongly aimed (cosine 0.04–0.06 against 0.03 for a random direction) but because d is
+  a minor direction of the stream (in-span cosine 0.02): the LD is linear in the norm and the reconstruction loss
+  quadratic, so a reconstruction that explains 97% of the squared norm can still miss a quarter of the LD. Hypothesis
+  (1) holds for the sum in this weaker sense.
+- **It says the names, IO more.** The off-span part raises the IO logit by 1.3–2.8 and the S logit by 0.4–1.4: a
+  "say one of the candidate names, mostly IO" signal, not a pure IO-minus-S one.
+- **It is structured but not one missing feature.** Across prompts its variance is about three times as concentrated
+  as that of random vectors in the same complements (top 5 components: 26–28% against 8%), but it takes 20 components
+  for 60%. Hypothesis (2), a single shared direction, is false; plausibly it is name-specific directions that are not
+  in the active set.
 
 **Systematics.** Every claim above rests on mean ablation and one set of 128 prompts. As in ioi-hydra, vary the ablation
 method (mean; zero, hook_z = 0; resample, each head's output from the matched corrupt prompt) and the prompt set
@@ -443,7 +486,7 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 
 From the [roadmap](atlas-design.md#roadmap):
 
-- **The off-span IO-name signal (§3):** why every circuit head writes 30–45% of its direct effect outside the span of
-  even the 128k dictionary's active features, and whether larger or task-trained dictionaries capture it.
+- **Capturing the off-span signal (§3):** whether it lies along the dedicated name features of the names in the prompt
+  (inactive there), and whether a larger, task-trained or LD-weighted dictionary captures it.
 - **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
   feature basis.
