@@ -199,3 +199,23 @@ def test_heads_read_and_ablated_at_c_proj_match_processed_transformerlens(models
     theirs = ht.run_with_hooks(tokens, return_type="loss", loss_per_token=True, fwd_hooks=[("blocks.9.attn.hook_z", zero_9_6)])
     assert (ours - next_token_ce(hf, tokens)).abs().max() > 1e-3  # the ablation does something
     torch.testing.assert_close(ours, theirs, rtol=1e-4, atol=1e-4)
+
+
+def test_resample_ablation_with_the_clean_prompts_changes_nothing(models):
+    """python/ioi.py: resample-ablating heads with references taken from the clean prompts themselves must leave the
+    logit difference unchanged (the reference, the value-bias convention and the write-back all round-trip)."""
+    from dataclasses import replace
+
+    import ioi
+    from atlas import load_tokenizer
+
+    hf, _ = models
+    ds = ioi.make_ioi_dataset(load_tokenizer(), n_per_template=2)
+    same = replace(ds, corrupt_tokens=ds.clean_tokens)
+    clean = ioi.run(hf, same, resid_layers=(12,))
+    with ioi.ablate_heads(hf, ioi.NAME_MOVERS, ioi.ablation_reference(hf, same, "resample")):
+        ablated = ioi.run(hf, same, resid_layers=(12,))
+    torch.testing.assert_close(ablated["ld"], clean["ld"], rtol=1e-4, atol=1e-4)
+    with ioi.ablate_heads(hf, ioi.NAME_MOVERS, ioi.ablation_reference(hf, same, "zero")):
+        zeroed = ioi.run(hf, same, resid_layers=(12,))
+    assert (zeroed["ld"] - clean["ld"]).abs().max() > 0.1  # a real ablation does something

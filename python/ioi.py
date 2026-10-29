@@ -176,6 +176,19 @@ def mean_reference(z: dict[int, torch.Tensor], template_id: torch.Tensor) -> dic
     return ref
 
 
+ABLATIONS = ("mean", "zero", "resample")
+
+
+def ablation_reference(model: HFGPT2, ds: IOIData, kind: str) -> dict[int, torch.Tensor] | None:
+    """What ablated heads output, as in ioi-hydra: "zero" (hook_z = 0: None), "mean" (the corrupt prompts' mean per
+    template and position) or "resample" (the matched corrupt prompt's own output)."""
+    assert kind in ABLATIONS, kind
+    if kind == "zero":
+        return None
+    z = capture_z(model, ds.corrupt_tokens.to(model.model.device), range(model.cfg.n_layers))
+    return mean_reference(z, ds.template_id) if kind == "mean" else z
+
+
 @contextmanager
 def ablate_heads(model: HFGPT2, heads, ref: dict[int, torch.Tensor] | None = None):
     """Inside the block, `heads` [(layer, head), ...] output ref[layer]'s columns, in capture_z's convention (None:

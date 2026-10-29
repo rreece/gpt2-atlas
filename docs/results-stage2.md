@@ -31,8 +31,10 @@ position systematics and its validation, is in [results-stage1.md](results-stage
 - **The IOI repair restores the clean features.** With the name movers ablated, the logit difference at the final
   residual is carried by the same SAE features as in the clean run (cosine 0.86–0.94 in three dictionaries). With
   the 24k and 32k dictionaries about half of it sits in the SAE's error and shifts there under the repair; with a 128k
-  dictionary only a quarter does, and the restoration is complete. The answer is carried mostly by "say this name"
-  features, about four per name, and the off-dictionary rest is written by the circuit's own heads (§3).
+  dictionary a fifth to a third does, and the features' share of it is restored exactly, with a smaller remainder of
+  the repair landing off-dictionary. The answer is carried mostly by "say this name" features, about four per name,
+  and the off-dictionary rest is written by the circuit's own heads. All of this holds across ablation methods,
+  prompt sets and templates (§3).
 
 The caveats are listed at the end.
 
@@ -292,9 +294,10 @@ dictionaries and 0.9 for the 128k one.
   L1-trained coefficients are off, while 32k's 32 active features span too little. The 128k SAE, with 32 active
   features from a larger dictionary, fixes both and leaves 26%. Its overall reconstruction is only 1–3 points better
   than 32k's (§1).
-- **With the largest dictionary the repair is a full restoration.** The features carry the same LD after the repair as
-  before (+0.01), and the error's gain (+0.15) is consistent with zero. The shift of LD into the dark matter seen with
-  the smaller dictionaries is largely an artifact of their size.
+- **With the largest dictionary the features' LD is restored exactly.** The features carry the same LD after the repair
+  as before (+0.01 here; −0.09 to +0.06 across the systematics below, always consistent with zero). The error still
+  gains a little (+0.15 here, +0.06 to +0.26 across the systematics, above zero in four of six conditions), about half
+  as much as with the smaller dictionaries: the repair's small overshoot lands off-dictionary.
 - **The restoration is robust.** In all three dictionaries the ablated run's per-feature LD contributions match the
   clean run's (cosine 0.86–0.94 at the final residual), and 88–97% of its feature LD comes from features active in
   the clean run.
@@ -349,6 +352,44 @@ biases' writes. The rest of the error lies inside the span, from coefficients th
 - **What the off-span direction is remains open.** Each head writes a large, consistent share of its IO-name signal
   outside even the 128k dictionary's active features; why the dictionaries do not capture it is the next question.
 
+**Systematics.** Every claim above rests on mean ablation and one set of 128 prompts. As in ioi-hydra, vary the ablation
+method (mean; zero, hook_z = 0; resample, each head's output from the matched corrupt prompt) and the prompt set
+(ioi-hydra's seeds 1–3 besides seed 0), and break the seed-0 mean-ablation result down by template. Every condition
+first reproduces ioi-hydra's repair fraction exactly (zero 1.06, mean 1.03, resample 1.00; seeds 1–3: 1.04, 1.03,
+1.02).
+
+![The IOI claims across ablation methods and prompt sets](figures/results_ioi_systematics.png)
+
+| Claim, at the final residual | Bloom 24k | OpenAI 32k | OpenAI 128k |
+| --- | --- | --- | --- |
+| Restoration: LD contributions vs clean (cosine), across the 6 conditions | 0.85–0.92 | 0.78–0.87 | 0.88–0.94 |
+| … across the 8 templates | 0.88–0.94 | 0.83–0.89 | 0.88–0.96 |
+| Ablated feature LD from clean-active features | 0.91–0.97 | 0.81–0.88 | 0.86–0.92 |
+| SAE error's share of the clean LD | 40–47% | 46–53% | 19–33% |
+| Change in the features' LD under the ablation | −0.10 to −0.32 | −0.08 to −0.23 | −0.09 to +0.06 |
+| Change in the error's LD under the ablation | +0.23 to +0.48 | +0.17 to +0.37 | +0.06 to +0.26 |
+| Clean LD carried by the dedicated name features | 0.90–1.03 | 0.24–0.47 | 1.03–1.60 |
+| Circuit heads' clean direct effect outside the active span | 37–41% | 63–65% | 37–43% |
+
+The conditions are mean, zero and resample ablation on seed 0, and mean ablation on seeds 1–3; the name-feature and
+off-span rows depend only on the prompt set. Each condition's change in LD carries a 95% interval over prompts of
+about ±0.15–0.2.
+
+- **Every qualitative claim holds.** The repair restores the clean run's features (cosine at least 0.78 in every
+  condition, 0.83 in every template), the 128k dictionary leaves the least LD in its error in every condition, name
+  features carry the most LD in Bloom's and the 128k dictionaries, and the circuit heads write about 40% of their
+  direct effect off-span in both, every time.
+- **Resample ablation restores least.** It replaces the name movers with real outputs for other names, so the
+  ablated run's features differ most from the clean run's (cosine 0.78–0.88); it also moves the least LD into the
+  error.
+- **One claim narrowed.** With seed 0 and mean ablation, the 128k dictionary's error gain (+0.15 [−0.01, +0.30])
+  looked consistent with zero, which an earlier version read as a full restoration. Across conditions it is +0.06 to
+  +0.26 and above zero in four of six, so the robust statement is the one above: the features' LD is restored exactly
+  (consistent with zero in every condition), and a smaller overshoot lands off-dictionary.
+- **Templates scatter more than conditions.** With 16 prompts each, the error share ranges 26–68% (Bloom) and 12–38%
+  (128k) across templates, and the 128k change in error −0.30 to +0.39: single templates are too small for these
+  quantities, though the restoration holds in each.
+
 ## 4. Systematic uncertainties
 
 The systematics of the neuron atlas ([stage 1 §10](results-stage1.md#10-systematic-uncertainties)) apply to everything here: the corpus, position and the row layout. These are the ones specific to SAEs.
@@ -356,6 +397,7 @@ The systematics of the neuron atlas ([stage 1 §10](results-stage1.md#10-systema
 | Source | How measured | Typical size | Relative to the statistical error | Verdict |
 | --- | --- | --- | --- | --- |
 | [SAE dictionary, for the IOI logit difference](#3-the-ioi-repair-in-the-sae-basis) | Bloom 24k vs OpenAI 32k vs OpenAI 128k | share of the LD in the SAE error: 46% / 46% / 26% | — | Large: what the dictionary misses depends on its size, not its architecture |
+| [IOI: ablation method, prompt set, template](#3-the-ioi-repair-in-the-sae-basis) | mean vs zero vs resample ablation; ioi-hydra's seeds 0–3; the 8 templates | restoration cosine 0.78–0.94; error share by dictionary 40–47% / 46–53% / 19–33% | — | Every qualitative claim holds; resample ablation restores least; single templates scatter widely |
 | [SAE context window](#1-the-gate-into-stage-2) | OpenAI's SAEs on positions 1–63 vs 64–127 | variance explained 0.84 vs −0.27 | — | Decisive: these SAEs are only valid within their 64-token training context; a BOS hardly matters |
 | [SAE pipeline conventions](#1-the-gate-into-stage-2) | our HF pipeline vs TransformerLens's `HookedTransformer` | 10⁻⁶ (residual stream), 10⁻⁴ (per-token loss) | — | Negligible |
 
@@ -372,7 +414,7 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 | SAE feature events vs feature moments (§2): events per feature against firing counts, accumulated independently | equal for every layer-9 feature; 72.05 events per token, equal to L0 |
 | Linear final-LayerNorm split of the logit difference (§3): features + bias + error + const against the logits | equal to 2e-5 |
 | Component split of the off-dictionary remainder (§3): heads + MLPs + rest against the remainder, and the components against the residual stream | equal to 3e-6 and 8e-6 |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, the name-balanced prompts and the off-dictionary split | 50 of 50 pass |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, the name-balanced prompts, the off-dictionary split and the resample-ablation round trip | 51 of 51 pass |
 
 **Cross-implementation**
 
@@ -391,8 +433,10 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 
 ## Caveats
 
-- **One ablation for §3.** The IOI analysis uses mean ablation only, and before the final residual its LD
-  attribution is a logit lens. OpenAI's SAEs are valid only within their 64-token training context (§1).
+- **The logit lens.** Before the final residual, §3's LD attribution is a logit lens, an approximation. OpenAI's SAEs
+  are valid only within their 64-token training context (§1).
+- **What ablation means.** §3's systematics vary the replacement (mean, zero, resample) but not the corruption behind
+  it (ABC) or which positions are ablated, two of ioi-hydra's open systematics.
 - **Pretrained dictionaries only.** Three releases, no seed variation, and no dictionary trained on this pipeline.
 
 ## Next
@@ -401,6 +445,5 @@ From the [roadmap](atlas-design.md#roadmap):
 
 - **The off-span IO-name signal (§3):** why every circuit head writes 30–45% of its direct effect outside the span of
   even the 128k dictionary's active features, and whether larger or task-trained dictionaries capture it.
-- **Systematics for §3:** zero and resample ablation, other templates and seeds, as in ioi-hydra.
 - **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
   feature basis.
