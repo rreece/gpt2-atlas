@@ -41,6 +41,7 @@ The steps can also run separately, e.g. shards on different machines: `python -m
     scripts/run-notebook        headless notebook execution, in place
     python/sae_gate.py          the gate into stage 2: SAELens SAEs on our pipeline (CLI: python -m sae_gate)
     scripts/run-sae-gate        the gate end to end
+    python/ioi.py               the IOI circuit: prompts, head ablations, the logit difference in SAE features
     tests/                      exact merging and bootstrap; HF backend matches TransformerLens
     docs/atlas-design.md        design doc; figures in docs/figures/
     docs/results-stage1.md      stage 1 results: the neuron atlas and its systematics; figures written by the notebook
