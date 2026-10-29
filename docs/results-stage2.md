@@ -38,7 +38,9 @@ position systematics and its validation, is in [results-stage1.md](results-stage
 - **The SAEs miss the LD because it lives in a minor direction.** The off-dictionary part of the final residual is
   only 2.5–3.1% of its squared norm but carries 26–42% of the LD, not because it is strongly aimed at the logit
   direction but because that direction carries little of the stream's norm. It raises both names' logits, IO more,
-  and is structured but not one missing feature (§3).
+  and is structured but not one missing feature. Nor is it held by a few inactive features: along the prompt's name
+  features the IO and S parts cancel, and the encoder's next-ranked features capture its LD only in proportion to its
+  norm, so a better encoder over the same dictionary would not recover it (§3).
 
 The caveats are listed at the end.
 
@@ -331,8 +333,10 @@ name's. At the final residual:
 | OpenAI 128k | 262 | 58 | 4 | 1.35 | 1.13 | 0.88 |
 
 - **The IOI answer is carried mostly by "say this name" features,** about four per name in Bloom's 24k and OpenAI's
-  128k dictionaries. Among the ten features carrying the most LD, a "Ben" feature (Bloom 15719) fires for only 8 of
-  the 59 names and boosts "Ben" most.
+  128k dictionaries. Among the ten features carrying the most LD, a "Ben" feature (Bloom
+  [15719](https://www.neuronpedia.org/gpt2-small/12-res-jb/15719)) fires for only 8 of the 59 names and boosts "Ben"
+  most. Bloom's [9680](https://www.neuronpedia.org/gpt2-small/12-res-jb/9680) is a clean example: its top logits on
+  Neuronpedia are all "John".
 - **The 128k advantage is not coverage.** It has about as many name features as Bloom's 24k and covers about as many
   names, but they carry more LD (1.35 against 1.02), and so do its other features. OpenAI's 32k has half as many name
   features and carries more of the answer in generic ones.
@@ -405,8 +409,45 @@ in each prompt's complement.
   "say one of the candidate names, mostly IO" signal, not a pure IO-minus-S one.
 - **It is structured but not one missing feature.** Across prompts its variance is about three times as concentrated
   as that of random vectors in the same complements (top 5 components: 26–28% against 8%), but it takes 20 components
-  for 60%. Hypothesis (2), a single shared direction, is false; plausibly it is name-specific directions that are not
-  in the active set.
+  for 60%. Hypothesis (2), a single shared direction, is false.
+
+**Is the off-span part in the dictionary?** If the dictionary has the right directions and only the encoder leaves them
+off, the off-span LD should lie along a few inactive features: the dedicated name features of the prompt's own names,
+or the features ranked just below the active ones by pre-activation. For each prompt, project the off-span part onto
+the span of a set of inactive features (within the active span's complement, so this is the best refit of their
+coefficients), and compare what it captures with controls: another name's features, and random inactive features of
+the same count.
+
+![The off-span LD along the prompt's name features, and along the next features by pre-activation](figures/results_ioi_offspan_names.png)
+
+| Share of the off-span LD [95%] (squared norm) captured by inactive features of | Bloom 24k | OpenAI 32k | OpenAI 128k |
+| --- | --- | --- | --- |
+| The IO name | +18% [+14, +26] (1.3%) | +14% [+11, +19] (0.9%) | +28% [+21, +47] (2.0%) |
+| The S name | −17% [−29, −10] (1.4%) | −14% [−22, −10] (1.0%) | −29% [−60, −17] (1.6%) |
+| Both names together | +1% [−8, +6] (2.6%) | −1% [−6, +4] (1.9%) | −1% [−16, +7] (3.5%) |
+| Another name | +3% [+2, +6] (1.1%) | +1% [−0, +2] (0.7%) | +2% [−1, +4] (1.1%) |
+| The next 32 by pre-activation (random 32) | 16% (12%); random 7% (5%) | 25% (21%); random 3% (4%) | 18% (19%); random 5% (5%) |
+| The next 96 (random 96) | 35% (28%); random 12% (15%) | 38% (36%); random 12% (13%) | 41% (35%); random 11% (14%) |
+| The next 224 (random 224) | 60% (49%); random 31% (35%) | 53% (52%); random 26% (31%) | 66% (53%); random 27% (32%) |
+
+An IO-name feature is already active in 82%, 50% and 85% of prompts; the best inactive one ranks 133, 63 and 57 by
+pre-activation (medians), against an L0 of 71, 32 and 32.
+
+- **Not along the prompt's name features.** The inactive IO-name features do lie along the off-span part, raising the
+  LD by 14–28% of it with 1–2% of its squared norm, about ten times another name's features. But the S name's
+  features lie along it as much, the other way, and together the two names capture none of the off-span LD (−1% to
+  +1%). This is the same "say both names" signal seen above, and the inactive IO-name features are not near-misses:
+  the best one ranks about twice L0 down.
+- **Not in a few near-miss features either.** The features ranked just below the active ones capture the off-span part
+  far better than random ones, but they capture its LD only in proportion to its norm (LD share 1.0–1.3 times the
+  squared-norm share). It takes the next 224 features to capture 53–66% of the off-span LD. The LD the SAEs miss is
+  spread thinly over hundreds of directions the encoder ranks low, not held by a few it just misses.
+- **A larger TopK k is not a fix.** Encoding with k = 64 instead of 32 cuts the error's LD (32k: 1.54 → 0.92; 128k:
+  0.88 → 0.27) but raises the error's share of the squared norm (3.27% → 3.34%; 2.73% → 3.37%), and at k = 128 the 128k
+  dictionary overshoots (error LD −0.43). These SAEs do not extrapolate in k, so this is not a recovery.
+- **What this means for stage 3.** A better encoder over the same dictionary would not capture the missed LD: no small
+  set of its features holds it. A dictionary that puts the LD in its objective (weighting the reconstruction error by
+  its effect on the logits, or training on the task) could. This is the first question the gate into stage 3 asks for.
 
 **Systematics.** Every claim above rests on mean ablation and one set of 128 prompts. As in ioi-hydra, vary the ablation
 method (mean; zero, hook_z = 0; resample, each head's output from the matched corrupt prompt) and the prompt set
@@ -499,7 +540,9 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 
 From the [roadmap](atlas-design.md#roadmap):
 
-- **Capturing the off-span signal (§3):** whether it lies along the dedicated name features of the names in the prompt
-  (inactive there), and whether a larger, task-trained or LD-weighted dictionary captures it.
+- **The gate into stage 3 (§3):** the LD the SAEs miss is spread over hundreds of directions, not held by a few
+  inactive features, so it asks for a dictionary trained with the LD in its objective (an LD-weighted reconstruction
+  loss, or task-trained). The first step is to scope one at the final residual: data, cost, and how to compare it with
+  the pretrained dictionaries.
 - **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
   feature basis.
