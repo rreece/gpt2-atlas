@@ -251,3 +251,28 @@ def test_pooled_moments_and_cov_match_exact_merge(x):
     lam = np.linalg.eigvalsh(np.cov(xd, rowvar=False, bias=True))
     np.testing.assert_allclose(total[0], lam.sum(), rtol=1e-5)
     np.testing.assert_allclose(pr[0], lam.sum() ** 2 / (lam**2).sum(), rtol=1e-5)
+
+
+def test_ioi_name_dataset_and_offdict_split():
+    """python/ioi.py: the name-balanced set has every name once per template as the IO; the off-dictionary split is an
+    exact linear split, and is zero for anything inside the span of the active features."""
+    from types import SimpleNamespace
+
+    from atlas import load_tokenizer
+    from ioi import TEMPLATES, make_name_dataset, offdict_split
+
+    dn = make_name_dataset(load_tokenizer())
+    counts = torch.bincount(dn.io)
+    assert len(dn) == len(TEMPLATES) * int((counts > 0).sum()) and set(counts[counts > 0].tolist()) == {len(TEMPLATES)}
+    assert all(dn.io[i] != dn.s[i] for i in range(len(dn)))
+
+    g = torch.Generator().manual_seed(0)
+    W = torch.randn(20, 8, generator=g)
+    sae = SimpleNamespace(W_dec=W, b_dec=torch.zeros(8), encode=lambda x: torch.relu(x @ W.T - 0.5), decode=lambda a: a @ W)
+    comps = {"a": torch.randn(5, 8, generator=g), "b": torch.randn(5, 8, generator=g)}
+    x, d = comps["a"] + comps["b"], torch.randn(5, 8, generator=g)
+    out = offdict_split(sae, x, comps, d, torch.ones(5))
+    torch.testing.assert_close(out["components"]["a"] + out["components"]["b"], out["total"])
+    inside = sae.decode(sae.encode(x))  # a combination of the active decoder rows
+    out2 = offdict_split(sae, x, {"x_hat": inside, "rest": x - inside}, d, torch.ones(5))
+    torch.testing.assert_close(out2["components"]["x_hat"], torch.zeros(5), atol=1e-4, rtol=0)  # float32 QR

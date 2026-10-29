@@ -104,6 +104,32 @@ def make_ioi_dataset(tokenizer, n_per_template: int = 16, templates=TEMPLATES, s
                    torch.tensor([tok1(n) for n in s_names]), end, torch.tensor(tids), orders)
 
 
+def make_name_dataset(tokenizer, templates=TEMPLATES, seed: int = 1) -> IOIData:
+    """Name-balanced IOI prompts: every single-token name as the indirect object once per template, with a random
+    subject and a random ABBA / BABA order. For measuring how features respond to each IO name; the corrupt prompts
+    are the clean ones (no ablation reference is built from them)."""
+    rng = random.Random(seed)
+    names = [n for n in NAMES if len(tokenizer(" " + n)["input_ids"]) == 1]
+    fill = lambda t, a, b, s: t.replace("[A]", a).replace("[B]", b).replace("[S]", s)
+    prompts, io_names, s_names, tids, orders = [], [], [], [], []
+    for io in names:
+        for tid, tmpl in enumerate(templates):
+            s = rng.choice([n for n in names if n != io])
+            abba = rng.random() < 0.5
+            prompts.append(fill(tmpl, io, s, s) if abba else fill(tmpl, s, io, s))
+            orders.append("ABBA" if abba else "BABA")
+            io_names.append(io)
+            s_names.append(s)
+            tids.append(tid)
+    ids = [[BOS] + tokenizer(t)["input_ids"] for t in prompts]
+    T = max(map(len, ids))
+    toks = torch.tensor([x + [BOS] * (T - len(x)) for x in ids])
+    end = torch.tensor([len(x) - 1 for x in ids])
+    tok1 = lambda n: tokenizer(" " + n)["input_ids"][0]
+    return IOIData(prompts, prompts, toks, toks, torch.tensor([tok1(n) for n in io_names]),
+                   torch.tensor([tok1(n) for n in s_names]), end, torch.tensor(tids), orders)
+
+
 # ---------------------------------------------------------------------------------------------
 # Heads: read and ablate at attn.c_proj
 # ---------------------------------------------------------------------------------------------
@@ -189,10 +215,12 @@ def run(model: HFGPT2, ds: IOIData, resid_layers=(10, 11, 12)) -> dict:
     caps, handles = {}, []
     for l in resid_layers:
         handles.append(patch_resid_pre(resid_module(model, l), lambda x, l=l: caps.__setitem__(l, x[n, end].clone())))
-    z = {}
+    z, mlp = {}, {}
     for l in range(model.cfg.n_layers):
         handles.append(model.model.h[l].attn.c_proj.register_forward_pre_hook(
             lambda m, args, l=l: z.__setitem__(l, args[0][n, end] - value_bias(model, l))))
+        handles.append(model.model.h[l].mlp.register_forward_hook(
+            lambda m, args, out, l=l: mlp.__setitem__(l, out[n, end] - out[n, end].mean(-1, keepdim=True))))
     try:
         h = model.model(ds.clean_tokens.to(model.model.device)).last_hidden_state[n, end]
     finally:
@@ -205,19 +233,53 @@ def run(model: HFGPT2, ds: IOIData, resid_layers=(10, 11, 12)) -> dict:
     const = (ln.bias * u).sum(-1)
     x = caps[12] if 12 in caps else None
     scale = (x.pow(2).mean(-1) + ln.eps).sqrt() if x is not None else None
-    de = None
+    de = heads = None
     if scale is not None:
         H = model.model.config.n_head
         de = torch.zeros(len(ds), model.cfg.n_layers, H)
+        heads = torch.zeros(len(ds), model.cfg.n_layers, H, model.cfg.d_model)
         for l, zl in z.items():
             W = model.model.h[l].attn.c_proj.weight  # Conv1D: [d_in, d_out], input columns per head
             for hh in range(H):
                 sl = _head_slice(model, hh)
                 out = zl[:, sl] @ W[sl]
                 out = out - out.mean(-1, keepdim=True)
+                heads[:, l, hh] = out.cpu()
                 de[:, l, hh] = ((out * d).sum(-1) / scale).cpu()
     return {"ld": (logits_io - logits_s).cpu(), "resid": {l: v.cpu() for l, v in caps.items()},
-            "scale": None if scale is None else scale.cpu(), "de": de, "d": d.cpu(), "const": const.cpu()}
+            "scale": None if scale is None else scale.cpu(), "de": de, "d": d.cpu(), "const": const.cpu(),
+            "heads": heads, "mlp": {l: v.cpu() for l, v in mlp.items()}}
+
+
+def components(r: dict) -> dict[str, torch.Tensor]:
+    """What writes the final residual stream at each prompt's final token, centered: every head (its output after W_O,
+    the value bias folded out), every MLP, and the rest (embeddings and all biases). They sum to it exactly."""
+    out = {f"{l}.{h}": r["heads"][:, l, h] for l in range(r["heads"].shape[1]) for h in range(r["heads"].shape[2])}
+    out |= {f"MLP{l}": v for l, v in r["mlp"].items()}
+    out["rest"] = r["resid"][12] - sum(out.values())
+    return out
+
+
+def offdict_split(sae, x: torch.Tensor, comps: dict[str, torch.Tensor], d: torch.Tensor, scale: torch.Tensor) -> dict:
+    """Which components write the part of x the SAE's active features cannot represent. Per prompt, P projects onto
+    the orthogonal complement of the span of the active features' decoder directions and the decoder bias, so
+    P x = sum over components of P c: an exact, linear split of the off-dictionary remainder. Returns its LD per
+    component {name: [N]}, its total [N], and the SAE error's LD [N] for comparison (the remainder is not identical
+    to the error: an SAE's coefficients are not the least-squares fit on its active features)."""
+    a = sae.encode(x)
+    x_hat = sae.decode(a)  # also clears a normalizing SAE's state
+    err = ((x - x_hat) * d).sum(-1) / scale
+    W = sae.W_dec.detach()
+    ld = {k: torch.zeros(len(x)) for k in comps}
+    total = torch.zeros(len(x))
+    for i in range(len(x)):
+        basis = torch.cat([W[a[i] != 0], sae.b_dec.detach()[None]]).T  # [d_model, k + 1]
+        Q, _ = torch.linalg.qr(basis)
+        perp = lambda v: v - Q @ (Q.T @ v)
+        total[i] = perp(x[i]) @ d[i] / scale[i]
+        for k, c in comps.items():
+            ld[k][i] = perp(c[i]) @ d[i] / scale[i]
+    return {"components": ld, "total": total, "sae_error": err}
 
 
 def feature_attribution(sae, x: torch.Tensor, d: torch.Tensor, scale: torch.Tensor) -> dict:
