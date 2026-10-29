@@ -12,4 +12,4 @@ The results are in two documents, one per stage of the [roadmap](atlas-design.md
 - **[Stage 2: SAE features](results-stage2.md).** The gate that checks pretrained SAEs against their releases on this
   pipeline; the atlas in Bloom's SAE basis at layers 6 and 9; and the IOI repair in the feature basis with three
   dictionaries. Headline: when the name movers are ablated, the repair restores the clean run's "say this name"
-  features, and what the dictionary misses depends on its size.
+  features, robustly across ablation methods and prompt sets, and what the dictionary misses depends on its size.
