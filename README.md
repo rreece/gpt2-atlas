@@ -5,7 +5,7 @@ per-unit statistics, top-activating contexts with decoded text, and residual-str
 errors. Built around streaming, exactly mergeable reductions, so it never stores raw activations, and kept
 laptop-sized: 1M OpenWebText tokens from ~8k documents in about 5 minutes on an M4.
 
-**Design: [docs/atlas-design.md](docs/atlas-design.md)** · **Results: [docs/results.md](docs/results.md)**
+**Design: [docs/atlas-design.md](docs/atlas-design.md)** · **Results: [stage 1](docs/results-stage1.md) · [stage 2](docs/results-stage2.md)**
 
 
 ![MLP neuron activation statistics in GPT2 with OpenWebText data.](docs/figures/results_mlp_neurons.png)
@@ -43,7 +43,9 @@ The steps can also run separately, e.g. shards on different machines: `python -m
     scripts/run-sae-gate        the gate end to end
     tests/                      exact merging and bootstrap; HF backend matches TransformerLens
     docs/atlas-design.md        design doc; figures in docs/figures/
-    docs/results.md             initial results; its figures are written by the notebook (run-notebook)
+    docs/results-stage1.md      stage 1 results: the neuron atlas and its systematics; figures written by the notebook
+    docs/results-stage2.md      stage 2 results: the SAE gate, the feature atlas and the IOI repair
+    docs/results.md             an index of the two
     docs/vllm-monitoring-ideas-2026-10-21.txt   notes on activation monitoring in live vLLM serving (out of scope here)
 
 
