@@ -219,3 +219,20 @@ def test_resample_ablation_with_the_clean_prompts_changes_nothing(models):
     with ioi.ablate_heads(hf, ioi.NAME_MOVERS, ioi.ablation_reference(hf, same, "zero")):
         zeroed = ioi.run(hf, same, resid_layers=(12,))
     assert (zeroed["ld"] - clean["ld"]).abs().max() > 0.1  # a real ablation does something
+
+
+def test_ioi_reproduces_ioi_hydra(models):
+    """python/ioi.py on our HF backend must reproduce ioi-hydra's head-level result on its 128 prompts: clean LD 3.38;
+    with the name movers mean-ablated, LD 3.53 and 4.57 logits of direct effect lost (a 103% repair)."""
+    import ioi
+    from atlas import load_tokenizer
+
+    hf, _ = models
+    ds = ioi.make_ioi_dataset(load_tokenizer())
+    clean = ioi.run(hf, ds, resid_layers=(12,))
+    with ioi.ablate_heads(hf, ioi.NAME_MOVERS, ioi.ablation_reference(hf, ds, "mean")):
+        ablated = ioi.run(hf, ds, resid_layers=(12,))
+    lost = sum(clean["de"][:, l, h].mean() - ablated["de"][:, l, h].mean() for l, h in ioi.NAME_MOVERS)
+    assert round(clean["ld"].mean().item(), 2) == 3.38
+    assert round(ablated["ld"].mean().item(), 2) == 3.53
+    assert round(lost.item(), 2) == 4.57

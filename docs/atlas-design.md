@@ -59,7 +59,7 @@ Stage 1 is built and validated on 1M tokens, with both backends. The code lives 
 
 | Check | Result |
 | --- | --- |
-| Merge exactness (unit tests: moments, covariance, top-k, histogram, state round trip, tokenizer) | pass; split vs. whole agree to float32 rounding (~1e-7 relative). Now part of a 51-test suite ([validation](results-stage2.md#5-validation)) |
+| Merge exactness (unit tests: moments, covariance, top-k, histogram, state round trip, tokenizer) | pass; split vs. whole agree to float32 rounding (~1e-7 relative). Now part of a 52-test suite ([validation](results-stage2.md#5-validation)) |
 | HF backend vs. TransformerLens bridge, per hook (7 hook types × layers 0, 5, 11, BOS included) | 21 of 21 agree within 2e-5 of the activation scale; raw HF residuals fail without centering, as they should |
 | Full 1M-token atlas, HF vs. TL backend | means, stds, quantiles agree to ~1e-5 relative; largest difference in any unit's max is 2e-4; 0.6% of top-k pointers swap among exact ties (identical left contexts) |
 | Pointers reproduce: recompute stored top-k entries from `(row, pos)` | 10 of 10 match to 5 decimals, layers 0, 9 and 11 |

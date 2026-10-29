@@ -199,11 +199,24 @@ The run stops after layer 9, so it takes about 5 minutes on an M4 (3,600 tokens/
 
 ## 3. The IOI repair in the SAE basis
 
-[ioi-hydra](https://github.com/rreece/ioi-hydra) found that mean-ablating the three name-mover heads {9.9, 9.6, 10.0}
-removes 4.57 logits of direct effect, yet the logit difference LD = logit(IO) − logit(S) does not drop: the network
-repairs 103% of the damage, mostly through the copy-suppression head 10.7 releasing its brake and backup heads in
-layers 10–11 stepping up. Head-level accounting cannot say whether the repair rebuilds the same *representation* or
-reaches the same LD another way. SAE features can.
+**What [ioi-hydra](https://github.com/rreece/ioi-hydra) found (head level).**
+
+- **The ablation:** mean-ablating the name movers {9.9, 9.6, 10.0} removes 4.57 logits of direct effect.
+- **The result:** the logit difference LD = logit(IO) − logit(S) doesn't drop. The network repairs 103% of the
+  damage.
+- **The mechanism:** 10.7, the copy-suppression "brake", releases (+2.13), and backup heads in layers 10–11 step up
+  (+2.45). 11.10 pushes back a little (−0.27).
+
+**The question in the feature basis.** Does the repair rebuild the same representation, or reach the same LD through
+different features?
+
+- **Same features:** the backups write the same "IO name" features the name movers would have. The repair is a
+  restoration.
+- **Different features:** the repair is compensation, not restoration.
+
+Head-level accounting can't distinguish these, but SAE features can. The answer below is restoration: the ablated
+run's LD is carried by the clean run's features, mostly name-specific "say this name" features rather than one "IO
+name" feature.
 
 `python/ioi.py` ports ioi-hydra's 128 prompts and its mean ablation to our HF backend. At each prompt's final token it
 encodes the residual stream with the gate-validated SAEs at three points, clean against ablated: **before layer 10**
@@ -457,7 +470,7 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 | SAE feature events vs feature moments (§2): events per feature against firing counts, accumulated independently | equal for every layer-9 feature; 72.05 events per token, equal to L0 |
 | Linear final-LayerNorm split of the logit difference (§3): features + bias + error + const against the logits | equal to 2e-5 |
 | Component split of the off-dictionary remainder (§3): heads + MLPs + rest against the remainder, and the components against the residual stream | equal to 3e-6 and 8e-6 |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, the name-balanced prompts, the off-dictionary split and the resample-ablation round trip | 51 of 51 pass |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, ioi-hydra's head-level result, the name-balanced prompts, the off-dictionary split and the resample-ablation round trip | 52 of 52 pass |
 
 **Cross-implementation**
 
@@ -471,7 +484,7 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 | Check | Result |
 | --- | --- |
 | Bloom's `gpt2-small-res-jb` SAEs vs the release post (§1) | L0 within 2.4%, alive features within 0.7 points, variance explained about the origin within 0.7 points, CE increase within the rounding of the post's clean CE |
-| ioi-hydra's head-level results on our HF backend (§3) | clean and ablated LD, direct effect lost, repair fraction and per-head responses reproduce to the reported precision |
+| ioi-hydra's head-level results on our HF backend (§3; clean LD, ablated LD and direct effect lost also in `tests/test_backends.py`) | clean and ablated LD, direct effect lost, repair fraction and per-head responses reproduce to the reported precision |
 | Single SAE features vs Neuronpedia's dashboards (§2), 50 per layer | firing rates within a median ratio of 1.00–1.02, maxima 0.97, top tokens shared for a median 100%; the one outlier is a document-boundary feature |
 
 ## Caveats
