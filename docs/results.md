@@ -1,6 +1,6 @@
 # GPT-2 Activation Atlas — Results
 
-*Ryan Reece, 2026-10-26, updated 2026-10-28. Design: [atlas-design.md](atlas-design.md).*
+*Ryan Reece, 2026-10-26, updated 2026-10-29. Design: [atlas-design.md](atlas-design.md).*
 
 The results are in two documents, one per stage of the [roadmap](atlas-design.md#roadmap).
 

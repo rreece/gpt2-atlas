@@ -56,7 +56,7 @@
   <text x="40" y="372" class="quiet small">IOI: the repair restores the clean features; the LD the SAEs miss lies in a minor direction of the stream.</text>
 
   <polygon points="50,412 60,402 70,412 60,422" fill="none" stroke-width="1.25" class="edge"/>
-  <text x="84" y="416" class="quiet small">Gate: a question pretrained dictionaries cannot answer (first: the LD they miss, spread thin)</text>
+  <text x="84" y="416" class="quiet small">Gate: a question pretrained dictionaries cannot answer (first: the LD they miss; e2e SAEs recover a third)</text>
 
   <!-- Stage 3 -->
   <rect x="24" y="440" width="712" height="72" rx="8" fill="none" stroke-width="1.25" class="edge"/>

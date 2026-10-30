@@ -236,3 +236,19 @@ def test_ioi_reproduces_ioi_hydra(models):
     assert round(clean["ld"].mean().item(), 2) == 3.38
     assert round(ablated["ld"].mean().item(), 2) == 3.53
     assert round(lost.item(), 2) == 4.57
+
+
+def test_ioi_drop_bos(models):
+    """ioi.drop_bos: the same prompts and final tokens without the BOS; mean ablation still runs on them."""
+    import ioi
+    from atlas import load_tokenizer
+
+    hf, _ = models
+    ds = ioi.make_ioi_dataset(load_tokenizer(), n_per_template=2)
+    nb = ioi.drop_bos(ds)
+    n = torch.arange(len(ds))
+    assert torch.equal(nb.clean_tokens, ds.clean_tokens[:, 1:])
+    assert torch.equal(nb.clean_tokens[n, nb.end], ds.clean_tokens[n, ds.end])
+    with ioi.ablate_heads(hf, ioi.NAME_MOVERS, ioi.ablation_reference(hf, nb, "mean")):
+        ablated = ioi.run(hf, nb, resid_layers=(12,))
+    assert ablated["ld"].isfinite().all()

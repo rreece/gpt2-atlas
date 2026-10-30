@@ -1,6 +1,6 @@
 # GPT-2 Activation Atlas — Stage 2: SAE features
 
-*Ryan Reece, 2026-10-26, updated 2026-10-28. Design: [atlas-design.md](atlas-design.md).*
+*Ryan Reece, 2026-10-26, updated 2026-10-29. Design: [atlas-design.md](atlas-design.md).*
 
 ## Contents
 
@@ -41,6 +41,10 @@ position systematics and its validation, is in [results-stage1.md](results-stage
   and is structured but not one missing feature. Nor is it held by a few inactive features: along the prompt's name
   features the IO and S parts cancel, and the encoder's next-ranked features capture its LD only in proportion to its
   norm, so a better encoder over the same dictionary would not recover it (§3).
+- **An end-to-end objective helps, but not enough.** Spliced in before layer 10, every SAE loses a third to a half of
+  the LD, which a random error of the same norm does not. Apollo's e2e SAEs, trained on the model's output, keep 68–69%
+  against 50% for a local SAE at the same L0, and no SAE leaves the repair intact (§3). Their e2e SAE is valid only
+  without a BOS, its training format (§1).
 
 The caveats are listed at the end.
 
@@ -152,6 +156,28 @@ difference, and the gate that matters for the IOI prompts (15–18 tokens with a
 Our activations match TransformerLens's for these SAEs too (residual stream within 10⁻⁵, per-token loss within
 10⁻⁴), and variance explained about the origin is consistent with SAELens's rough reference of 0.9; there is no
 per-layer published table to compare against.
+
+**Apollo's end-to-end SAEs.** §3 also tests residual SAEs trained with the model's output in their objective (Braun
+et al. 2024, [arXiv:2405.12241](https://arxiv.org/abs/2405.12241); 46,080 features, ReLU, at `resid_pre` 2, 6 and 10).
+Each comes with one of three objectives: *local*, reconstructing the layer as Bloom's and OpenAI's do; *e2e*, minimizing
+the KL divergence of the model's output with the SAE spliced in; and *e2e+ds*, e2e plus reconstructing the later
+layers. Each is released at a similar L0 and at a similar CE loss (`gpt2-small-res_{sll,scl,sle,slefr}-ajt`; at layer
+10 the e2e SAEs are the same in both sets, so there are four distinct SAEs). They were trained on OpenWebText without
+a BOS. Gated at layer 10 against the paper's tables 2 and 3:
+
+| Layer 10 | L0 (paper) | Alive (paper) | CE increase, no BOS (paper) | CE increase with a BOS | Centered variance explained, no BOS / BOS |
+| --- | --- | --- | --- | --- | --- |
+| Local, similar L0 | 73.2 (74.9) | 60.5% (60.8%) | 0.199 (0.202) | 0.185 | 0.68 / 0.80 |
+| Local, similar CE | 155.5 (162.7) | 72.1% (71.6%) | 0.131 (0.122) | 0.118 | 0.71 / 0.84 |
+| e2e | 65.7 (62.3) | 51.9% (54.3%) | 0.167 (0.131) | 0.627 | 0.08 / −0.50 |
+| e2e+ds | 71.1 (70.2) | 53.1% (54.3%) | 0.151 (0.144) | 0.151 | 0.72 / −0.31 |
+
+- **The gate passes in their format.** Without a BOS, on 127-token rows, L0 is within 6%, alive features within 2.4
+  points and the CE increase within 0.04 of the paper. Our clean CE (3.45) is above the paper's 3.139 because the
+  paper evaluates on longer contexts; only the increase is compared.
+- **The e2e SAE does not generalize to a BOS.** With a BOS its CE increase quadruples (0.63). It hardly reconstructs
+  its input (centered variance explained 0.08), only what the later layers need, and that does not transfer to a
+  context format it was not trained on. The other three are unaffected. §3 therefore tests these SAEs in both formats.
 
 ## 2. The atlas in the SAE basis
 
@@ -449,6 +475,48 @@ pre-activation (medians), against an L0 of 71, 32 and 32.
   set of its features holds it. A dictionary that puts the LD in its objective (weighting the reconstruction error by
   its effect on the logits, or training on the task) could. This is the first question the gate into stage 3 asks for.
 
+**Does an end-to-end objective keep the LD?** Apollo's e2e SAEs (§1) put the model's output in their training
+objective, the change the stage-3 gate asks for, though for all of OpenWebText rather than this task. Splice each
+layer-10 SAE's reconstruction into the residual stream before layer 10, at every position but a BOS, and measure the
+LD downstream, clean and with the name movers mean-ablated. This is a functional test, not the linear split above: the
+reconstruction replaces the stream, and layers 10–11, with the brake and the backups, read it. Run it without a BOS,
+the Apollo SAEs' training format, and with one, as everywhere above; and compare with two controls: a random error of
+the same norm per token in place of the SAE's, and the splice at the final token alone or everywhere but it.
+
+![IOI LD kept with each SAE spliced in before layer 10, and the repair with it](figures/results_ioi_e2e.png)
+
+| Spliced before layer 10, no BOS (no SAE: LD 3.03, repair +0.03) | LD kept [95%] | Repair under the ablation [95%] | Random error, same norm | Final token only | All but the final token |
+| --- | --- | --- | --- | --- | --- |
+| Bloom 24k (local) | 59% [47, 71] | −0.60 [−0.75, −0.45] | 2.93 | 1.36 | 3.70 |
+| Apollo local, similar L0 (L0 73) | 50% [35, 64] | −0.08 [−0.30, +0.14] | 2.89 | 1.55 | 3.26 |
+| Apollo local, similar CE (L0 156) | 61% [52, 70] | −0.15 [−0.34, +0.04] | 2.89 | 1.84 | 3.12 |
+| Apollo e2e (L0 66) | 68% [58, 78] | −1.22 [−1.59, −0.85] | 2.66 | 1.89 | 3.25 |
+| Apollo e2e+ds (L0 71) | 69% [58, 80] | −0.28 [−0.62, +0.06] | 2.99 | 1.18 | 2.52 |
+
+With a BOS (no SAE: LD 3.38, repair +0.15) the local SAEs keep about the same (Bloom 57%, Apollo 50% and 63%), e2e+ds
+75% [62, 87], and e2e only 46% [37, 55], outside its format.
+
+- **Every SAE loses a third to a half of the LD, and not by the size of its error.** A random error of the same norm
+  keeps nearly all of it (2.66–2.99 of 3.03), so what the SAEs drop is aimed against the LD, as at the final residual.
+  For the local SAEs the loss is at the final token: splicing there alone loses most of it, splicing everywhere else
+  almost none.
+- **The end-to-end objective helps, but not enough.** In their format the e2e and e2e+ds SAEs keep 68–69% of the LD,
+  against 50% for the local SAE at a similar L0: +0.55 [+0.14, +0.93] and +0.59 [+0.15, +1.02] logits. The local SAE
+  with twice the L0 keeps 61% (+0.33 [+0.07, +0.60]). So a downstream objective recovers about a third of what the
+  local SAE loses (0.55 of 1.52 logits), and still loses a third of the LD: a KL averaged over OpenWebText does not
+  single out this task.
+- **The e2e reconstructions work only together.** At the final token alone, e2e+ds keeps 1.18 of 3.03, less than
+  spliced everywhere (2.10); spliced everywhere but the final token it loses 0.5. The later layers rely on the whole
+  reconstructed context, as the e2e objective trains them to.
+- **No SAE leaves the repair intact.** Without an SAE the ablation leaves the LD unchanged (+0.03); with one spliced in
+  it falls: by 0.08–0.28 for the Apollo local and e2e+ds SAEs (intervals reaching zero), by 0.60 for Bloom's and by
+  1.22 for the pure e2e SAE.
+  The backups and the released brake do not find in the reconstruction what they read in the stream, and least of
+  all in the e2e SAE's, which reconstructs its input least (variance explained 0.08).
+- **What this means for stage 3.** A downstream objective moves the dictionary in the right direction, so the gate's
+  question is now sharper: whether an objective weighted to this task (the LD, at the final residual or before layer
+  10) recovers the rest, with Apollo's e2e SAEs as the baseline to beat.
+
 **Systematics.** Every claim above rests on mean ablation and one set of 128 prompts. As in ioi-hydra, vary the ablation
 method (mean; zero, hook_z = 0; resample, each head's output from the matched corrupt prompt) and the prompt set
 (ioi-hydra's seeds 1–3 besides seed 0), and break the seed-0 mean-ablation result down by template. Every condition
@@ -494,6 +562,8 @@ The systematics of the neuron atlas ([stage 1 §10](results-stage1.md#10-systema
 | Source | How measured | Typical size | Relative to the statistical error | Verdict |
 | --- | --- | --- | --- | --- |
 | [SAE dictionary, for the IOI logit difference](#3-the-ioi-repair-in-the-sae-basis) | Bloom 24k vs OpenAI 32k vs OpenAI 128k | share of the LD in the SAE error: 46% / 46% / 26% | — | Large: what the dictionary misses depends on its size, not its architecture |
+| [SAE training objective, for the IOI logit difference](#3-the-ioi-repair-in-the-sae-basis) | Apollo's local vs e2e vs e2e+ds SAEs before layer 10, spliced in | LD kept 50% / 68% / 69% at similar L0 | — | Large: a downstream objective recovers a third of what a local SAE loses |
+| [SAE context format](#1-the-gate-into-stage-2) | Apollo's SAEs with and without a BOS | e2e CE increase 0.17 vs 0.63; others unchanged | — | Decisive for e2e SAEs: valid only in their training format |
 | [IOI: ablation method, prompt set, template](#3-the-ioi-repair-in-the-sae-basis) | mean vs zero vs resample ablation; ioi-hydra's seeds 0–3; the 8 templates | restoration cosine 0.78–0.94; error share by dictionary 40–47% / 46–53% / 19–33% | — | Every qualitative claim holds; resample ablation restores least; single templates scatter widely |
 | [SAE context window](#1-the-gate-into-stage-2) | OpenAI's SAEs on positions 1–63 vs 64–127 | variance explained 0.84 vs −0.27 | — | Decisive: these SAEs are only valid within their 64-token training context; a BOS hardly matters |
 | [SAE pipeline conventions](#1-the-gate-into-stage-2) | our HF pipeline vs TransformerLens's `HookedTransformer` | 10⁻⁶ (residual stream), 10⁻⁴ (per-token loss) | — | Negligible |
@@ -511,13 +581,13 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 | SAE feature events vs feature moments (§2): events per feature against firing counts, accumulated independently | equal for every layer-9 feature; 72.05 events per token, equal to L0 |
 | Linear final-LayerNorm split of the logit difference (§3): features + bias + error + const against the logits | equal to 2e-5 |
 | Component split of the off-dictionary remainder (§3): heads + MLPs + rest against the remainder, and the components against the residual stream | equal to 3e-6 and 8e-6 |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, ioi-hydra's head-level result, the name-balanced prompts, the off-dictionary split and the resample-ablation round trip | 52 of 52 pass |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, ioi-hydra's head-level result, the prompts without a BOS, the name-balanced prompts, the off-dictionary split and the resample-ablation round trip | 53 of 53 pass |
 
 **Cross-implementation**
 
 | Check | Result |
 | --- | --- |
-| SAE pipeline vs TransformerLens's `HookedTransformer` (§1), every layer including the final residual, Bloom's and OpenAI's SAEs | residual stream within 1e-5 relative, per-token loss within 1e-4 |
+| SAE pipeline vs TransformerLens's `HookedTransformer` (§1), every layer including the final residual, Bloom's, OpenAI's and Apollo's SAEs | residual stream within 1e-5 relative, per-token loss within 1e-4 |
 | Heads read and zero-ablated at `attn.c_proj` vs processed TransformerLens's `hook_z` (§3; `tests/test_backends.py`) | head outputs within 1e-5, losses under a zero ablation within 1e-4 |
 
 **External: published numbers**
@@ -525,6 +595,7 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 | Check | Result |
 | --- | --- |
 | Bloom's `gpt2-small-res-jb` SAEs vs the release post (§1) | L0 within 2.4%, alive features within 0.7 points, variance explained about the origin within 0.7 points, CE increase within the rounding of the post's clean CE |
+| Apollo's e2e SAEs vs the paper's tables 2–3 (§1), layer 10, without a BOS | L0 within 6%, alive features within 2.4 points, CE increase within 0.04 |
 | ioi-hydra's head-level results on our HF backend (§3; clean LD, ablated LD and direct effect lost also in `tests/test_backends.py`) | clean and ablated LD, direct effect lost, repair fraction and per-head responses reproduce to the reported precision |
 | Single SAE features vs Neuronpedia's dashboards (§2), 50 per layer | firing rates within a median ratio of 1.00–1.02, maxima 0.97, top tokens shared for a median 100%; the one outlier is a document-boundary feature |
 
@@ -534,15 +605,15 @@ Checks that the atlas computes what it claims, grouped by what they check agains
   are valid only within their 64-token training context (§1).
 - **What ablation means.** §3's systematics vary the replacement (mean, zero, resample) but not the corruption behind
   it (ABC) or which positions are ablated, two of ioi-hydra's open systematics.
-- **Pretrained dictionaries only.** Three releases, no seed variation, and no dictionary trained on this pipeline.
+- **Pretrained dictionaries only.** Bloom's, OpenAI's two and Apollo's four layer-10 SAEs, no seed variation, and no
+  dictionary trained on this pipeline. Apollo's are tested at layer 10 only, and their e2e SAEs only without a BOS (§1).
 
 ## Next
 
 From the [roadmap](atlas-design.md#roadmap):
 
-- **The gate into stage 3 (§3):** the LD the SAEs miss is spread over hundreds of directions, not held by a few
-  inactive features, so it asks for a dictionary trained with the LD in its objective (an LD-weighted reconstruction
-  loss, or task-trained). The first step is to scope one at the final residual: data, cost, and how to compare it with
-  the pretrained dictionaries.
+- **The gate into stage 3 (§3):** a downstream objective (Apollo's e2e SAEs) recovers a third of the LD a local SAE
+  loses, but not the rest. The next question is whether an objective weighted to the task does; the first step is to
+  scope one before layer 10, where Apollo's e2e SAEs are the baseline (data, cost, and the same splice test).
 - **More of the feature atlas:** layers 10–11 for the IOI question, and the corpus and position systematics in the
   feature basis.
