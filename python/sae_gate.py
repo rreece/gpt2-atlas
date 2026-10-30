@@ -48,6 +48,28 @@ REFERENCES = {
 }
 
 
+def _ajt(l0, alive_k, ce_increase):
+    """Braun et al. 2024 (e2e SAEs), tables 2-3: values at layers 2, 6 and 10; 46,080 features, clean CE 3.139."""
+    at = dict(zip((2, 6, 10), zip(l0, alive_k, ce_increase)))
+    return {"source": "https://arxiv.org/abs/2405.12241",
+            "l0": [at[l][0] if l in at else None for l in range(11)],
+            "alive_frac": [at[l][1] * 1000 / 46080 if l in at else None for l in range(11)],
+            "ce_sae": [3.139 + at[l][2] if l in at else None for l in range(11)],
+            "ce_clean": 3.139}
+
+
+# local = MSE at the same layer; e2e = KL of the output with the SAE spliced in; e2e+ds = e2e plus downstream MSE.
+# "sl" releases have similar L0, "sc" releases similar CE loss; at layer 10 the e2e SAEs are the same in both.
+REFERENCES |= {
+    "gpt2-small-res_sll-ajt": _ajt((18.4, 42.8, 74.9), (18, 21, 28), (0.101, 0.228, 0.202)),  # local
+    "gpt2-small-res_sle-ajt": _ajt((18.6, 39.7, 62.3), (20, 25, 25), (0.043, 0.099, 0.131)),  # e2e
+    "gpt2-small-res_slefr-ajt": _ajt((17.9, 36.8, 70.2), (15, 15, 25), (0.039, 0.124, 0.144)),  # e2e+ds
+    "gpt2-small-res_scl-ajt": _ajt((73.5, 69.4, 162.7), (41, 26, 33), (0.016, 0.144, 0.122)),  # local
+    "gpt2-small-res_sce-ajt": _ajt((33.4, 27.5, 62.3), (22, 22, 25), (0.020, 0.145, 0.131)),  # e2e
+    "gpt2-small-res_scefr-ajt": _ajt((36.2, 36.8, 70.2), (18, 15, 25), (0.015, 0.124, 0.144)),  # e2e+ds
+}
+
+
 def load_sae(release: str, sae_id: str, device):
     from sae_lens import SAE
 

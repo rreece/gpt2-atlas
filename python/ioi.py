@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import random
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import torch
@@ -102,6 +102,12 @@ def make_ioi_dataset(tokenizer, n_per_template: int = 16, templates=TEMPLATES, s
     tok1 = lambda n: tokenizer(" " + n)["input_ids"][0]
     return IOIData(prompts, corrupt, clean, corr, torch.tensor([tok1(n) for n in io_names]),
                    torch.tensor([tok1(n) for n in s_names]), end, torch.tensor(tids), orders)
+
+
+def drop_bos(ds: IOIData) -> IOIData:
+    """The same prompts without the leading BOS, for SAEs trained on contexts without one (Apollo's e2e SAEs)."""
+    assert (ds.clean_tokens[:, 0] == BOS).all() and (ds.corrupt_tokens[:, 0] == BOS).all()
+    return replace(ds, clean_tokens=ds.clean_tokens[:, 1:], corrupt_tokens=ds.corrupt_tokens[:, 1:], end=ds.end - 1)
 
 
 def make_name_dataset(tokenizer, templates=TEMPLATES, seed: int = 1) -> IOIData:
