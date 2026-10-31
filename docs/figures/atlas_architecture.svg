@@ -91,8 +91,8 @@
   <!-- Row 4: recompute and query -->
   <rect x="24" y="576" width="300" height="72" rx="8" class="box edge"/>
   <text x="40" y="600" class="ink bold">recompute on demand</text>
-  <text x="40" y="620" class="quiet small">rerun any row from tokens.npy</text>
-  <text x="40" y="636" class="quiet small">for activations the atlas doesn't store</text>
+  <text x="40" y="620" class="quiet small">atlas show: a unit's contexts, rerun</text>
+  <text x="40" y="636" class="quiet small">atlas.recompute: any hook, any rows</text>
 
   <text x="352" y="604" text-anchor="middle" class="quiet small">(row, pos)</text>
 

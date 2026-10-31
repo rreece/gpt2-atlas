@@ -23,6 +23,8 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
     run-atlas                                # 1M tokens from 8 files -> results/atlas/*.parquet, ~10 min on an M4
     run-atlas results/atlas-fineweb 1e6 fineweb   # same for FineWeb; `code` for Python (codeparrot-clean)
     python -m atlas run DIR --positions      # also statistics per position bucket (positions.parquet)
+    python -m atlas show results/atlas post 9 1000   # one unit: statistics and top contexts, rerun from tokens.npy
+    jupyter lab notebooks/demo.ipynb         # a five-step demo of what works, each step in seconds
     jupyter lab notebooks/atlas.ipynb        # explore: residual geometry, neuron stats, errors, top contexts
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
     run-sae-gate                             # stage 2 gate: pretrained SAEs vs their release's metrics, ~40 min
@@ -77,14 +79,17 @@ spectrum = np.linalg.eigvalsh(resid["cov"][9])[::-1]  # PCA of the residual stre
 ```
 
 The atlas answers only from what it stores: summaries and the top 20 per unit (plus, for SAE features at layer 9,
-every activation). Anything else, such as a unit's activation on every token of a row, means rerunning that row from
-`tokens.npy` through the model.
+every activation). Anything else is recomputed: activations are a pure function of (weights, tokens), so
+`python -m atlas show DIR KIND LAYER UNIT` (KIND: post, resid or sae) reruns a unit's top contexts from `tokens.npy`,
+showing the unit on every token around the stored one and checking that the stored value comes back, and
+`atlas.recompute(model, tokens, rows, hook, unit)` returns any hook's activations on any rows.
 
 
 ## Layout
 
     python/atlas.py             tokenize, model backends, mergeable accumulators, bootstrap, export (CLI: python -m atlas)
-    notebooks/atlas.ipynb       exploration: residual geometry, neuron statistics, errors, single neurons
+    notebooks/atlas.ipynb       the analyses behind docs/results-stage*.md, and their figures
+    notebooks/demo.ipynb        a short demo: one neuron, one token in the SAE basis, Neuronpedia, the IOI repair
     scripts/run-atlas           pipeline end to end
     scripts/run-notebook        headless notebook execution, in place
     python/sae_gate.py          the gate into stage 2: SAELens SAEs on our pipeline (CLI: python -m sae_gate)

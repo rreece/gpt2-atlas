@@ -17,10 +17,13 @@ Pipeline
    `resid.npz` and `histograms.npz`, ready for querying with DuckDB. `topk.parquet` holds both
    extremes, told apart by `side` ('top', or 'bottom' for residual dims). With several shards it adds
    bootstrap errors (resampling shards within each file) and per-shard moments (`shards.parquet`).
+4. `show`: a unit's statistics and its top contexts, each row rerun from `tokens.npy` (`recompute`), showing the
+   unit on every token around the stored one and checking that the stored value comes back.
 
     python -m atlas tokenize results/atlas --n-tokens 1000000          # --dataset fineweb|code for another corpus
     python -m atlas run results/atlas --shards 16      # 2 per file; or --rows 0:4000 on one machine, 4000:7813 on another
     python -m atlas export results/atlas
+    python -m atlas show results/atlas post 9 1000     # a unit's statistics and top contexts, rerun from tokens.npy
     python -c "import duckdb; duckdb.sql(\"select * from 'results/atlas/topk.parquet' where layer = 9 and unit = 123 order by rank\").show()"
 
 Conventions
@@ -684,6 +687,41 @@ def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, 
     return atlas
 
 
+def recompute(model, tokens: np.ndarray, rows, hook: str, unit: int | None = None, sae=None,
+              batch_size: int = 64) -> torch.Tensor:
+    """Rerun `rows` of `tokens` through the model and return the activations at `hook`, on the CPU: [len(rows), T, d],
+    or [len(rows), T] for one unit. A hook ending in `.sae` is an SAE's features on that resid_pre (`sae` required),
+    as `run` makes them. Activations are a pure function of (weights, tokens), so this reproduces any stored value."""
+    base = hook.removesuffix(".sae")
+    assert (sae is not None) == hook.endswith(".sae"), "an .sae hook needs its SAE, and only it"
+    device = next(model.model.parameters()).device
+    rows = np.asarray(rows)
+    out = []
+    for r0 in range(0, len(rows), batch_size):
+        got = {}
+
+        def cap(act):
+            x = sae.encode(act.float()) if sae is not None else act
+            got["x"] = (x if unit is None else x[..., unit]).float().cpu()
+            raise _Stop  # nothing after this hook is needed
+
+        model.run(torch.from_numpy(tokens[rows[r0 : r0 + batch_size]].astype(np.int64)).to(device), {base: cap})
+        out.append(got["x"])
+    return torch.cat(out)
+
+
+def model_revision(model, name: str = "gpt2") -> str | None:
+    """The Hugging Face commit of the loaded weights, for provenance: the snapshot the cache resolves `name` to (None if
+    it cannot tell)."""
+    rev = getattr(getattr(model.model, "config", None), "_commit_hash", None)
+    if rev is None:
+        from huggingface_hub import try_to_load_from_cache
+
+        path = try_to_load_from_cache(name, "config.json")
+        rev = Path(path).parent.name if isinstance(path, str) else None
+    return rev
+
+
 # ---------------------------------------------------------------------------------------------
 # Errors: bootstrap over shards and files
 #
@@ -794,6 +832,70 @@ def contexts(tokens: np.ndarray, tokenizer, row: np.ndarray, pos: np.ndarray, be
     tok_s = np.array([clean(t) for t in tok], dtype=object)
     ctx_s = np.array([clean(a) + "«" + clean(t) + "»" + clean(b) for a, t, b in zip(pre, tok, post)], dtype=object)
     return tok_s[inv.ravel()], ctx_s[inv.ravel()]
+
+
+def render(tokenizer, toks, acts, pos: int, before: int = 16, after: int = 4, frac: float = 0.25, base: float = 0.0) -> str:
+    """One context as text: the token at `pos` marked «tok», and every token whose activation departs from `base` (the
+    unit's mean) in the same direction by at least `frac` of the marked one's, followed by its value, e.g. ` John⟨2.31⟩`.
+    Tokens that are fragments of one character are joined. Newlines show as ⏎; position 0 (BOS) is left out."""
+    ref = float(acts[pos]) - base or 1.0
+    spans, p = [], max(1, pos - before)
+    while p < min(len(toks), pos + 1 + after):
+        q = p + 1
+        while "\ufffd" in tokenizer.decode([int(t) for t in toks[p:q]]) and q < len(toks) and q - p < 4:
+            q += 1
+        spans.append((p, q))
+        p = q
+    parts = []
+    for p, q in spans:
+        t = tokenizer.decode([int(t) for t in toks[p:q]]).replace("\n", "⏎")
+        i = max(range(p, q), key=lambda r: (r == pos, abs(float(acts[r]) - base)))
+        v = float(acts[i])
+        marked = p <= pos < q
+        parts.append(f"«{t}»⟨{v:.2f}⟩" if marked else f"{t}⟨{v:.2f}⟩" if (v - base) / ref >= frac else t)
+    return "".join(parts)
+
+
+def show(dir: Path, kind: str, layer: int, unit: int, side: str = "top", k: int = 5, device: str = "cpu",
+         sae_release: str | None = None, backend: str = "hf"):
+    """Print a unit's statistics and its top (or bottom) contexts, each rerun from tokens.npy to show the unit on every
+    token around the stored one, and check that the stored value comes back."""
+    import duckdb
+
+    hook = {"post": f"blocks.{layer}.mlp.hook_post", "resid": f"blocks.{layer}.hook_resid_pre" if layer < 12 else
+            "blocks.11.hook_resid_post", "sae": f"blocks.{layer}.hook_resid_pre.sae"}[kind]
+    stats = duckdb.sql(f"select * from '{dir / 'neurons.parquet'}' where hook = '{hook}' and unit = {unit}").df()
+    if stats.empty:
+        raise SystemExit(f"no unit {unit} at {hook} in {dir / 'neurons.parquet'}")
+    s = stats.iloc[0]
+    ex = duckdb.sql(f"select rank, value, row, pos from '{dir / 'topk.parquet'}' where hook = '{hook}' and unit = {unit} "
+                    f"and side = '{side}' order by rank limit {k}").df()
+    print(f"{hook}, unit {unit}, in {dir} ({int(s.n):,} tokens)")
+    err = f" ± {s.mean_err:.2g}" if "mean_err" in s and np.isfinite(s.mean_err) else ""
+    print(f"  mean {s['mean']:.3g}{err}, std {s['std']:.3g}, max {s['max']:.3g}, "
+          f"positive on {s.frac_pos:.2%} of tokens, p99 {s.p99:.3g}, p99.9 {s.p999:.3g}")
+    if ex.empty:
+        raise SystemExit(f"  no {side}-k exemplars stored for this unit")
+    sae = None
+    if kind == "sae":
+        if sae_release is None:  # the release the run used, recorded in its state files
+            sae_release = torch.load(next(dir.glob("state-*.pt")), mmap=True, weights_only=False)["saes"][layer]["release"]
+        from sae_gate import load_sae
+
+        sae = load_sae(sae_release, f"blocks.{layer}.hook_resid_pre", device)
+        print(f"  SAE: {sae_release}")
+    tokens = np.load(dir / "tokens.npy", mmap_mode="r")
+    acts = recompute(load_model(device, backend), tokens, ex.row.to_numpy(), hook, unit, sae)
+    tokenizer = load_tokenizer()
+    print(f"{side} {len(ex)} contexts, rerun from tokens.npy (stored → recomputed; ⟨⟩ marks tokens at least a quarter "
+          f"as far from the unit's mean as the marked one):")
+    worst = 0.0
+    for i, r in enumerate(ex.itertuples()):
+        got = float(acts[i, r.pos])
+        worst = max(worst, abs(got - r.value) / max(abs(r.value), 1e-3))
+        print(f"  #{r.rank:<2d} row {r.row}, pos {r.pos}: {r.value:.3f} → {got:.3f}   {render(tokenizer, tokens[r.row], acts[i], r.pos, base=float(s['mean']))}")
+    print(f"  worst relative difference, stored vs recomputed: {worst:.1e}")
+    return worst
 
 
 def export_positions(atlas: Atlas, out: Path, shards=(), total=None, stat=None):
@@ -1052,6 +1154,15 @@ def main(argv=None):
     s.add_argument("--hooks", help="comma-separated fnmatch patterns over hook names, e.g. 'blocks.[0-2].mlp.hook_pre' (default: MLP hook_post in every layer and the residual stream)")
     s = sub.add_parser("export", help="merge state-*.pt -> parquet + npz")
     s.add_argument("dir", type=Path)
+    s = sub.add_parser("show", help="a unit's statistics and top contexts, rerun from tokens.npy")
+    s.add_argument("dir", type=Path)
+    s.add_argument("kind", choices=["post", "resid", "sae"], help="post: MLP neuron; resid: residual dimension; sae: SAE feature")
+    s.add_argument("layer", type=int, help="the block (resid: 12 is the final residual stream)")
+    s.add_argument("unit", type=int)
+    s.add_argument("--side", choices=["top", "bottom"], default="top", help="bottom: the most negative (residual dimensions)")
+    s.add_argument("-k", type=int, default=5, help="how many contexts")
+    s.add_argument("--sae", help="the SAE release, if not the one recorded in the run's state files")
+    s.add_argument("--device", default="cpu")
     args = p.parse_args(argv)
     args.dir.mkdir(parents=True, exist_ok=True)
 
@@ -1102,7 +1213,7 @@ def main(argv=None):
                         progress=len(ranges) == 1, hooks=select_hooks(model.cfg, args.hooks), positions=args.positions,
                         saes=saes, events=events)
             dt = time.time() - t0
-            state = atlas.state() | {"rows": (start, stop), "model": "gpt2", "backend": args.backend,
+            state = atlas.state() | {"rows": (start, stop), "model": "gpt2", "model_revision": model_revision(model), "backend": args.backend,
                                      "git_commit": git_commit(), "torch": str(torch.__version__), "seconds": dt,
                                      "saes": {l: {"release": args.sae, "sae_id": f"blocks.{l}.hook_resid_pre"} for l in saes}}
             path = args.dir / f"state-{start}-{stop}.pt"
@@ -1132,6 +1243,9 @@ def main(argv=None):
         print(f"merged {len(paths)} state(s), {atlas.n_rows:,} rows, ranges {ranges} -> {args.dir}")
         if len(paths) > 1:
             print(f"*_err columns: {kind}" + ("" if "cluster" in kind else "; use 3 or more files for errors that include the file-to-file term"))
+
+    elif args.cmd == "show":
+        show(args.dir, args.kind, args.layer, args.unit, args.side, args.k, args.device, args.sae)
 
 
 if __name__ == "__main__":
