@@ -1,6 +1,6 @@
 # GPT-2 Activation Atlas — Design Doc
 
-*Ryan Reece, 2026-10-22, updated 2026-10-29.*
+*Ryan Reece, 2026-10-22, updated 2026-10-30.*
 
 ## Summary
 
@@ -41,7 +41,7 @@ Activations are a pure function of (weights, tokens), so we keep tokens plus red
 
 ## Architecture
 
-The pipeline is three commands over plain files: `tokenize` once, `run` per shard anywhere, `export` to merge. Two tools sit beside it and share its model backend and SAE loader: `sae_gate.py`, which checks a pretrained SAE against its release on this pipeline, and `ioi.py`, which runs the IOI prompts with head ablations and splits the logit difference into SAE features. The notebook reads all of their outputs and writes the results' figures.
+The pipeline is three commands over plain files: `tokenize` once, `run` per shard anywhere, `export` to merge. A fourth, `show`, recomputes on demand: it prints a unit's statistics and reruns its top contexts from `tokens.npy` (`atlas.recompute`, which returns any hook's activations on any rows), checking that each stored value comes back. Two tools sit beside it and share its model backend and SAE loader: `sae_gate.py`, which checks a pretrained SAE against its release on this pipeline, and `ioi.py`, which runs the IOI prompts with head ablations and splits the logit difference into SAE features. The notebook reads all of their outputs and writes the results' figures.
 
 ![Atlas pipeline: tokenize, sharded run, export, query](figures/atlas_architecture.svg)
 
@@ -59,7 +59,7 @@ Stage 1 is built and validated on 1M tokens, with both backends. The code lives 
 
 | Check | Result |
 | --- | --- |
-| Merge exactness (unit tests: moments, covariance, top-k, histogram, state round trip, tokenizer) | pass; split vs. whole agree to float32 rounding (~1e-7 relative). Now part of a 53-test suite ([validation](results-stage2.md#5-validation)) |
+| Merge exactness (unit tests: moments, covariance, top-k, histogram, state round trip, tokenizer) | pass; split vs. whole agree to float32 rounding (~1e-7 relative). Now part of a 55-test suite ([validation](results-stage2.md#5-validation)) |
 | HF backend vs. TransformerLens bridge, per hook (7 hook types × layers 0, 5, 11, BOS included) | 21 of 21 agree within 2e-5 of the activation scale; raw HF residuals fail without centering, as they should |
 | Full 1M-token atlas, HF vs. TL backend | means, stds, quantiles agree to ~1e-5 relative; largest difference in any unit's max is 2e-4; 0.6% of top-k pointers swap among exact ties (identical left contexts) |
 | Pointers reproduce: recompute stored top-k entries from `(row, pos)` | 10 of 10 match to 5 decimals, layers 0, 9 and 11 |
@@ -120,7 +120,7 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 
 **Gates before trusting a pretrained SAE.** On our own pipeline, its variance explained, CE loss recovered, L0 and dead-feature fraction must match the release's reported numbers. A mismatch means a convention differs (hook name, LayerNorm folding, BOS handling), and the SAE's outputs would be quietly meaningless. Done for `gpt2-small-res-jb` (`python/sae_gate.py`, `run-sae-gate`): at every layer L0, alive features, variance explained and the CE increase match the release post's table, and our activations match TransformerLens's to 10⁻⁶ ([results](results-stage2.md#1-the-gate-into-stage-2)). OpenAI's `gpt2-small-resid-post-v5-32k` and `-128k` pass within their 64-token training context and fail beyond it. Compare with the release's own publication: SAELens's built-in reference values for this release are rough, and the post computes variance explained about the origin rather than the mean.
 
-**Regression checks on every run.** Pointers must reproduce on recompute for a random sample of top-k entries, and residual outlier dimensions must stay stable across shards.
+**Regression checks.** Pointers must reproduce on recompute for a random sample of top-k entries, and residual outlier dimensions must stay stable across shards. The first runs with the notebook (its §12, through `atlas.recompute`, the function `show` uses) and with every `show`, which reports the worst difference between stored and recomputed values; neither runs automatically with `run`. Outlier-dimension stability is covered only by the shard bootstrap errors.
 
 ## Open questions
 

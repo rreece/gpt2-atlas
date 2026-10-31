@@ -252,3 +252,34 @@ def test_ioi_drop_bos(models):
     with ioi.ablate_heads(hf, ioi.NAME_MOVERS, ioi.ablation_reference(hf, nb, "mean")):
         ablated = ioi.run(hf, nb, resid_layers=(12,))
     assert ablated["ld"].isfinite().all()
+
+
+def test_recompute_reproduces_stored_topk(models, tokens):
+    """atlas.recompute: rerunning the rows behind each stored top-k pointer gives back its value, for an MLP hook and for
+    SAE features (`atlas show` relies on this)."""
+    from types import SimpleNamespace
+
+    from atlas import recompute
+
+    hf, _ = models
+    g = torch.Generator().manual_seed(0)
+    W = torch.randn(hf.cfg.d_model, 64, generator=g) / 10
+    sae = SimpleNamespace(cfg=SimpleNamespace(d_sae=64), encode=lambda x: torch.relu(x @ W - 1.0))
+    toks = tokens.numpy().astype(np.uint16)
+    hooks = {"blocks.3.mlp.hook_post": hf.cfg.d_mlp}
+    a = run(hf, toks, 0, len(toks), batch_size=2, k=3, progress=False, hooks=hooks, saes={2: sae})
+    T = toks.shape[1]
+    for name, s in (("blocks.3.mlp.hook_post", None), ("blocks.2.hook_resid_pre.sae", sae)):
+        top = a.acc[name]["topk"]
+        for unit in (0, 7):
+            idx = top.index[:, unit].numpy()
+            got = recompute(hf, toks, idx // T, name, unit, s)[np.arange(len(idx)), idx % T]
+            torch.testing.assert_close(got, top.values[:, unit].cpu(), rtol=1e-5, atol=1e-5)
+
+
+def test_model_revision_is_recorded(models):
+    """Provenance: each state file records the Hugging Face commit of the weights (atlas.model_revision)."""
+    from atlas import model_revision
+
+    rev = model_revision(models[0])
+    assert isinstance(rev, str) and len(rev) == 40 and int(rev, 16) >= 0

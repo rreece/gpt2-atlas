@@ -23,6 +23,8 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
     run-atlas                                # 1M tokens from 8 files -> results/atlas/*.parquet, ~10 min on an M4
     run-atlas results/atlas-fineweb 1e6 fineweb   # same for FineWeb; `code` for Python (codeparrot-clean)
     python -m atlas run DIR --positions      # also statistics per position bucket (positions.parquet)
+    python -m atlas show results/atlas post 9 1000   # one unit: statistics and top contexts, rerun from tokens.npy
+    jupyter lab notebooks/demo.ipynb         # a five-step demo of what works, each step in seconds
     jupyter lab notebooks/atlas.ipynb        # explore: residual geometry, neuron stats, errors, top contexts
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
     run-sae-gate                             # stage 2 gate: pretrained SAEs vs their release's metrics, ~40 min
@@ -33,10 +35,61 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
 The steps can also run separately, e.g. shards on different machines: `python -m atlas {tokenize,run,export} --help`.
 
 
+## Query
+
+The outputs are plain files in the run's directory (`results/` is not in git: run the pipeline first; `results/atlas-sae`
+comes from the `--sae` line above):
+
+    neurons.parquet      one row per unit: hook, kind (post = MLP neuron, resid, sae), layer, unit, n, mean, std, max,
+                         frac_pos (firing rate), p50 ... p999, and bootstrap errors (*_err, *_err_stat)
+    topk.parquet         one row per exemplar: hook, kind, layer, unit, side (top; bottom for resid), rank, value,
+                         row, pos, token, context (decoded, the token marked « »)
+    events-L9-*.parquet  SAE runs only: every nonzero feature activation at layer 9: row, pos, feature, value
+    resid.npz            per layer 0-12: mean [13, 768], cov [13, 768, 768], total variance and effective dimension
+    tokens.npy           the token ids [rows, seq_len] that (row, pos) point into
+
+Query the files with DuckDB, which reads only the columns and rows a query needs (the events are 71M rows), then
+continue in pandas with `.df()`:
+
+```python
+import duckdb
+q = lambda s: duckdb.sql(s).show(max_width=160)
+
+# One unit's top contexts
+q("select rank, value, context from 'results/atlas/topk.parquet' where kind='post' and layer=9 and unit=1000 order by rank")
+# A residual dimension's most negative contexts (bottom-k)
+q("select rank, value, context from 'results/atlas/topk.parquet' where kind='resid' and layer=9 and unit=447 and side='bottom' order by rank")
+# Across units: the rarest-firing live neurons
+q("select layer, unit, frac_pos, max from 'results/atlas/neurons.parquet' where kind='post' and frac_pos > 0 order by frac_pos limit 10")
+# By token: the neurons whose top contexts most often land on ' John'
+q("select layer, unit, count(*) n from 'results/atlas/topk.parquet' where kind='post' and token=' John' group by all order by n desc, layer, unit limit 10")
+# SAE features: the densest at layer 9
+q("select unit as feature, frac_pos from 'results/atlas-sae/neurons.parquet' where kind='sae' and layer=9 order by frac_pos desc limit 10")
+# Per token, from the sparse events: the layer-9 features active at row 100, position 50
+q("select feature, value from 'results/atlas-sae/events-L9-*.parquet' where row=100 and pos=50 order by value desc")
+
+# Into pandas
+neurons = duckdb.sql("select * from 'results/atlas/neurons.parquet' where kind='post'").df()
+```
+
+```python
+import numpy as np
+resid = np.load("results/atlas/resid.npz")
+spectrum = np.linalg.eigvalsh(resid["cov"][9])[::-1]  # PCA of the residual stream before layer 9
+```
+
+The atlas answers only from what it stores: summaries and the top 20 per unit (plus, for SAE features at layer 9,
+every activation). Anything else is recomputed: activations are a pure function of (weights, tokens), so
+`python -m atlas show DIR KIND LAYER UNIT` (KIND: post, resid or sae) reruns a unit's top contexts from `tokens.npy`,
+showing the unit on every token around the stored one and checking that the stored value comes back, and
+`atlas.recompute(model, tokens, rows, hook, unit)` returns any hook's activations on any rows.
+
+
 ## Layout
 
     python/atlas.py             tokenize, model backends, mergeable accumulators, bootstrap, export (CLI: python -m atlas)
-    notebooks/atlas.ipynb       exploration: residual geometry, neuron statistics, errors, single neurons
+    notebooks/atlas.ipynb       the analyses behind docs/results-stage*.md, and their figures
+    notebooks/demo.ipynb        a short demo: one neuron, one token in the SAE basis, Neuronpedia, the IOI repair
     scripts/run-atlas           pipeline end to end
     scripts/run-notebook        headless notebook execution, in place
     python/sae_gate.py          the gate into stage 2: SAELens SAEs on our pipeline (CLI: python -m sae_gate)

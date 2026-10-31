@@ -581,7 +581,7 @@ Checks that the atlas computes what it claims, grouped by what they check agains
 | SAE feature events vs feature moments (§2): events per feature against firing counts, accumulated independently | equal for every layer-9 feature; 72.05 events per token, equal to L0 |
 | Linear final-LayerNorm split of the logit difference (§3): features + bias + error + const against the logits | equal to 2e-5 |
 | Component split of the off-dictionary remainder (§3): heads + MLPs + rest against the remainder, and the components against the residual stream | equal to 3e-6 and 8e-6 |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, ioi-hydra's head-level result, the prompts without a BOS, the name-balanced prompts, the off-dictionary split and the resample-ablation round trip | 53 of 53 pass |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, ioi-hydra's head-level result, the prompts without a BOS, the name-balanced prompts, the off-dictionary split, the resample-ablation round trip, recompute against stored top-k for MLP and SAE units, and the recorded model revision | 55 of 55 pass |
 
 **Cross-implementation**
 
