@@ -1,6 +1,6 @@
 # GPT-2 Activation Atlas — Stage 1: the neuron atlas
 
-*Ryan Reece, 2026-10-26, updated 2026-10-28. Design: [atlas-design.md](atlas-design.md).*
+*Ryan Reece, 2026-10-26, updated 2026-11-01. Design: [atlas-design.md](atlas-design.md).*
 
 ## Contents
 
@@ -31,7 +31,9 @@ the last processing convention. Stage 2, the same atlas in SAE feature bases, is
 
 - **The residual stream grows and then collapses.** Its total variance grows about 4800× from the embedding to the
   final residual. Its effective dimension rises from 14 to about 170 in layers 7–9, then collapses to about 7 at the
-  final residual, where the top principal component alone carries 34% of the variance.
+  final residual, where the top principal component alone carries 34% of the variance. In layers 0–5 the top
+  principal component is position (correlation with log position up to −0.91); at the final residual the top ones
+  are about the next token (newline against ".").
 - **A few residual dimensions are constant offsets.** Dimensions 64, 266, 326, 373, 447 and 481 sit many standard
   deviations away from zero on almost every token. The covariance view subtracts the mean, so it does not see them.
   They are the same dimensions on all three corpora.
@@ -104,6 +106,33 @@ bootstrap error (§5). The notebook prints every layer.
 - **Basis dimensions.** Dimension 480 stands out early (7.5% of the variance at layer 1, down to 2% by layer 7). From
   layer 7 to 11 no basis dimension carries more than 2.5%, so which one is largest there means little. At the final
   residual, dimensions 496, 430 and 36 carry 10.5%, 8% and 8%.
+
+**Principal components as units.** The spectrum says how much variance the top directions carry, not what they are.
+A second run on the same tokens makes the top 32 principal components of every residual hook atlas units: the stream
+is projected onto them inside the hook, and each component gets moments, a histogram, and top- and bottom-k
+exemplars like a residual dimension (`run --pcs 32 --pcs-from results/atlas`, about 2 minutes; `show DIR pc LAYER N`).
+Each component's variance over the 1M tokens matches its eigenvalue to 2×10⁻⁶.
+
+![Principal components against log position by layer, and layer 1's PC0 by position](figures/results_resid_pcs.png)
+
+| Layer | Component most correlated with log position (correlation) | Top components' exemplars |
+| --- | --- | --- |
+| 0–5 | PC0 (−0.85 to −0.91) | PC0: early positions (median 4) against late ones (median 122) at layer 1 |
+| 6–7 | PC1 (−0.89, −0.78) | PC0 at layer 6: "/" and "(" at the bottom; PC2: the byte fragments "�" |
+| 8–11 | PC3, PC5, PC7, then PC0, weakening (0.70, 0.62, 0.58, 0.44) | PC1 at layer 9: "�"; PC2: "." and newlines |
+| 12 (final) | none above 0.36 among the top 16 | PC0: newline (top) against "." (bottom); PC2: " I" against "," |
+
+Correlations are over 400 random rows, recomputed; exemplars are each component's 20 top and bottom tokens.
+
+- **In the first half of the network, the top direction is position.** From the embedding to layer 5, PC0 tracks log
+  position (correlation −0.85 to −0.91): GPT-2's learned position embedding stays the stream's largest direction. At
+  layer 1 it carries 14% of the variance, roughly flat over the first ~10 positions, then falling steadily to
+  position 127. At layers 6–7 it is the second component, and from layer 8 it spreads into lower-ranked ones and
+  weakens.
+- **At the final residual, the top directions are about the next token.** PC0, 34% of the variance, runs from "." to
+  newline in its exemplars, and read through the unembedding it boosts newlines and quotes. Position no longer shows.
+- **Other top components are token types.** Byte fragments of multi-byte characters ("�") and punctuation ("/", ".")
+  have components of their own in the middle layers.
 
 ## 2. Offset dimensions in the residual stream
 
@@ -472,7 +501,7 @@ group's checks and the calibration test with every run (notebook §12); the unit
 | Position buckets pool back to the whole: each unit's buckets in the 512-token atlas (§8), merged, against its overall moments | counts equal; means agree to 1e-7 of a unit's spread, stds to 7e-7 relative, firing rates exactly |
 | Deep scan vs the 1M atlas (§7): firing rates on different data, same code | median ratio 1.000, 1st–99th percentile 0.97–1.03 |
 | Centering identity (§9): raw minus centered total variance against the variance along the all-ones direction | equal at every layer, as the decomposition requires |
-| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, ioi-hydra's head-level result, the prompts without a BOS, the name-balanced prompts, the off-dictionary split, the resample-ablation round trip, recompute against stored top-k for MLP and SAE units, and the recorded model revision | 55 of 55 pass |
+| Unit tests: exact merging for every accumulator (split vs whole, including bottom-k and the position buckets), sampling across a file, hook selection, the file-level bootstrap and its small-sample correction, the uncentered backend, the SAE gate's splicing hook, SAE features and events in a run, IOI heads against processed TransformerLens, ioi-hydra's head-level result, the prompts without a BOS, the name-balanced prompts, the off-dictionary split, the resample-ablation round trip, recompute against stored top-k for MLP and SAE units, principal components (the basis, and as units in a run), and the recorded model revision | 57 of 57 pass |
 
 **Cross-implementation**
 

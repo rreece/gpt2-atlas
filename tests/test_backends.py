@@ -283,3 +283,25 @@ def test_model_revision_is_recorded(models):
 
     rev = model_revision(models[0])
     assert isinstance(rev, str) and len(rev) == 40 and int(rev, 16) >= 0
+
+
+def test_run_with_principal_components(models, tokens):
+    """Principal components as units: run projects the stream onto a PCBasis inside the hook, keeps top- and bottom-k,
+    and recompute gives the stored values back."""
+    from atlas import PCBasis, recompute
+
+    hf, _ = models
+    acts = capture(hf, tokens, ["blocks.4.hook_resid_pre"])["blocks.4.hook_resid_pre"][:, 1:].reshape(-1, hf.cfg.d_model)
+    x = acts.double().numpy()
+    basis = PCBasis.from_covariance(x.mean(0), np.cov(x, rowvar=False), 6)
+    toks = tokens.numpy().astype(np.uint16)
+    a = run(hf, toks, 0, len(toks), batch_size=2, k=3, progress=False, hooks={}, pcs={"blocks.4.hook_resid_pre": basis})
+    name = "blocks.4.hook_resid_pre.pc"
+    assert set(a.acc) == {name} and {"topk", "bottomk"} <= set(a.acc[name]) and "cov" not in a.acc[name]
+    np.testing.assert_allclose(a.acc[name]["moments"].mean.numpy(), 0, atol=1e-3 * float(basis.eigenvalues[0]) ** 0.5)
+    T = toks.shape[1]
+    for side in ("topk", "bottomk"):
+        acc = a.acc[name][side]
+        idx = acc.index[:, 0].numpy()
+        got = recompute(hf, toks, idx // T, name, 0, basis)[np.arange(len(idx)), idx % T]
+        torch.testing.assert_close(got, acc.values[:, 0].cpu(), rtol=1e-5, atol=1e-4)

@@ -59,8 +59,8 @@
   <text x="56" y="268" class="quiet small">MLP + residual hooks (--hooks)</text>
 
   <rect x="272" y="208" width="216" height="72" rx="8" class="box edge"/>
-  <text x="288" y="232" class="ink bold">SAE encoder · --sae</text>
-  <text x="288" y="252" class="quiet small">features as units, chosen layers</text>
+  <text x="288" y="232" class="ink bold">SAE or PC basis</text>
+  <text x="288" y="252" class="quiet small">--sae, --pcs: features as units</text>
   <text x="288" y="268" class="quiet small">sparse events (--sae-events)</text>
 
   <rect x="504" y="208" width="216" height="72" rx="8" class="box edge"/>

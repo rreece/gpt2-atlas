@@ -447,21 +447,23 @@ def select_hooks(cfg, patterns: str | None = None) -> dict[str, int]:
 
 
 def hook_order(name: str) -> tuple[int, int]:
-    """Where the forward pass reaches a hook: (layer, position within the block). An SAE's features (`<hook>.sae`)
-    sit where their hook does."""
+    """Where the forward pass reaches a hook: (layer, position within the block). An SAE's features (`<hook>.sae`) and
+    principal components (`<hook>.pc`) sit where their hook does."""
     _, layer, rest = name.split(".", 2)
-    return int(layer), BLOCK_HOOKS.index(rest.removesuffix(".sae"))
+    return int(layer), BLOCK_HOOKS.index(rest.removesuffix(".sae").removesuffix(".pc"))
 
 
 def hook_layer(name: str) -> int:
     """Layer index of a hook. resid_post of layer l is resid_pre of layer l + 1."""
     l = int(name.split(".")[1])
-    return l + 1 if name.endswith("hook_resid_post") else l
+    return l + 1 if name.removesuffix(".sae").removesuffix(".pc").endswith("hook_resid_post") else l
 
 
 def hook_kind(name: str) -> str:
     if name.endswith(".sae"):
         return "sae"
+    if name.endswith(".pc"):
+        return "pc"
     return "resid" if "hook_resid" in name else name.split(".")[-1].removeprefix("hook_")
 
 
@@ -475,7 +477,8 @@ def hist_mask(index: torch.Tensor, T: int, stride: int) -> torch.Tensor:
 class Atlas:
     """Accumulators for every hook. Moments, top-k and covariance see every token; histograms (and so the
     exported quantiles) see every `hist_stride`-th token, which cuts their cost, the largest, by that factor.
-    Residual dimensions are signed, so they also keep bottom-k; MLP neurons (GELU) keep only top-k. With positions,
+    Residual dimensions and principal components are signed, so they also keep bottom-k; MLP neurons (GELU) keep only
+    top-k. With positions,
     every hook also keeps moments per position bucket, and residual hooks a covariance per coarse position bucket."""
 
     def __init__(self, hooks: dict[str, int], k: int = 20, n_bins: int = 256, hist_stride: int = 1, device="cpu",
@@ -487,8 +490,9 @@ class Atlas:
         self.acc: dict[str, dict[str, Accumulator]] = {}
         for name, d in hooks.items():
             a = {"moments": Moments(d), "hist": Histogram(d, edges, device), "topk": TopK(d, k, device)}
-            if hook_kind(name) == "resid":
+            if hook_kind(name) in ("resid", "pc"):
                 a["bottomk"] = TopK(d, k, device, largest=False)
+            if hook_kind(name) == "resid":
                 a["cov"] = Covariance(d)
             if positions:
                 a["posmoments"] = BucketMoments(d)
@@ -638,20 +642,23 @@ BACKENDS = {"hf": HFGPT2, "hf-raw": lambda device: HFGPT2(device, center=False),
 
 def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, k: int = 20, hist_stride: int = 1,
         device="cpu", progress=True, hooks: dict[str, int] | None = None, positions: bool = False,
-        saes: dict | None = None, events: tuple[int, ...] = ()) -> Atlas:
+        saes: dict | None = None, events: tuple[int, ...] = (), pcs: dict | None = None) -> Atlas:
     """Accumulate rows start:stop at `hooks` (default_hooks if None). The forward pass stops after the last of them.
 
     saes maps a layer to an SAE on its resid_pre (stage 2): its features become units `blocks.L.hook_resid_pre.sae`
     with the same accumulators, the SAE encoding the residual stream inside the hook. For layers in `events`, every
-    nonzero feature activation is also kept as an event (token index, feature, value) in atlas.events[layer]."""
+    nonzero feature activation is also kept as an event (token index, feature, value) in atlas.events[layer].
+    pcs maps a residual hook to a PCBasis: its principal components become units `<hook>.pc` (signed, so with
+    bottom-k), the stream projected onto them inside the hook."""
     from tqdm.auto import tqdm
 
-    hooks = dict(hooks or default_hooks(model.cfg))
-    saes = saes or {}
+    hooks = default_hooks(model.cfg) if hooks is None else dict(hooks)
+    saes, pcs = saes or {}, pcs or {}
     sae_hooks = {f"blocks.{l}.hook_resid_pre.sae": sae.cfg.d_sae for l, sae in saes.items()}
-    atlas = Atlas(hooks | sae_hooks, k=k, hist_stride=hist_stride, device=device, positions=positions)
+    pc_hooks = {f"{h}.pc": b.n for h, b in pcs.items()}
+    atlas = Atlas(hooks | sae_hooks | pc_hooks, k=k, hist_stride=hist_stride, device=device, positions=positions)
     atlas.events = {l: [] for l in events}
-    raw = set(hooks) | {f"blocks.{l}.hook_resid_pre" for l in saes}  # hook points to register on the backend
+    raw = set(hooks) | {f"blocks.{l}.hook_resid_pre" for l in saes} | set(pcs)  # hook points to register on the backend
     last = max(raw, key=hook_order)  # the last one reached, not the last one listed
     T = tokens.shape[1]
     pos = torch.arange(1, T, device=device)
@@ -664,6 +671,8 @@ def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, 
         def hook(act):
             if name in hooks:
                 atlas.update(name, act, index)
+            if name in pcs:
+                atlas.update(f"{name}.pc", pcs[name].encode(act.float()), index)
             if sae is not None:
                 feats = sae.encode(act.float())  # [B, T, d_sae]; the backend hands over the centered stream
                 atlas.update(f"{name}.sae", feats, index)
@@ -687,13 +696,15 @@ def run(model, tokens: np.ndarray, start: int, stop: int, batch_size: int = 64, 
     return atlas
 
 
-def recompute(model, tokens: np.ndarray, rows, hook: str, unit: int | None = None, sae=None,
+def recompute(model, tokens: np.ndarray, rows, hook: str, unit: int | None = None, encoder=None,
               batch_size: int = 64) -> torch.Tensor:
     """Rerun `rows` of `tokens` through the model and return the activations at `hook`, on the CPU: [len(rows), T, d],
-    or [len(rows), T] for one unit. A hook ending in `.sae` is an SAE's features on that resid_pre (`sae` required),
-    as `run` makes them. Activations are a pure function of (weights, tokens), so this reproduces any stored value."""
-    base = hook.removesuffix(".sae")
-    assert (sae is not None) == hook.endswith(".sae"), "an .sae hook needs its SAE, and only it"
+    or [len(rows), T] for one unit. A hook ending in `.sae` or `.pc` is an SAE's features or a PCBasis's components on
+    that residual hook, as `run` makes them, and needs that `encoder`. Activations are a pure function of (weights,
+    tokens), so this reproduces any stored value."""
+    sae = encoder
+    base = hook.removesuffix(".sae").removesuffix(".pc")
+    assert (sae is not None) == (base != hook), "an .sae or .pc hook needs its encoder, and only it"
     device = next(model.model.parameters()).device
     rows = np.asarray(rows)
     out = []
@@ -708,6 +719,53 @@ def recompute(model, tokens: np.ndarray, rows, hook: str, unit: int | None = Non
         model.run(torch.from_numpy(tokens[rows[r0 : r0 + batch_size]].astype(np.int64)).to(device), {base: cap})
         out.append(got["x"])
     return torch.cat(out)
+
+
+class PCBasis:
+    """The top principal components of a residual hook as a linear encoder: encode(x) = (x - mean) @ V.T, with V the
+    eigenvectors of the hook's covariance as rows, largest eigenvalue first. Each eigenvector's sign is fixed so that
+    its largest component is positive."""
+
+    def __init__(self, mean, V, eigenvalues):
+        self.mean, self.V, self.eigenvalues = (torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32)
+                                               for a in (mean, V, eigenvalues))
+        self.n = len(self.V)
+
+    def to(self, device):
+        self.mean, self.V = self.mean.to(device), self.V.to(device)
+        return self
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        return (x - self.mean) @ self.V.T
+
+    @classmethod
+    def from_covariance(cls, mean, cov, n: int) -> PCBasis:
+        lam, vec = np.linalg.eigh(np.asarray(cov, dtype=np.float64))
+        lam, V = lam[::-1][:n], vec[:, ::-1][:, :n].T
+        V = V * np.sign(V[np.arange(n), np.abs(V).argmax(1)])[:, None]
+        return cls(mean, V, lam)
+
+
+def resid_hook(layer: int, n_layers: int = 12) -> str:
+    """The residual hook of a resid.npz layer index: resid_pre of `layer`, or the final residual for n_layers."""
+    return f"blocks.{layer}.hook_resid_pre" if layer < n_layers else f"blocks.{n_layers - 1}.hook_resid_post"
+
+
+def pc_bases(src: Path, n: int) -> dict[str, PCBasis]:
+    """The top n principal components of every residual hook in an exported atlas's resid.npz."""
+    r = np.load(src / "resid.npz")
+    return {resid_hook(int(l)): PCBasis.from_covariance(m, c, n) for l, m, c in zip(r["layer"], r["mean"], r["cov"])}
+
+
+def save_pc_bases(bases: dict[str, PCBasis], path: Path, src: Path):
+    np.savez(path, hooks=np.array(list(bases)), mean=np.stack([b.mean.cpu().numpy() for b in bases.values()]),
+             V=np.stack([b.V.cpu().numpy() for b in bases.values()]),
+             eigenvalues=np.stack([b.eigenvalues.numpy() for b in bases.values()]), source=str(src))
+
+
+def load_pc_bases(path: Path) -> dict[str, PCBasis]:
+    z = np.load(path)
+    return {str(h): PCBasis(m, V, e) for h, m, V, e in zip(z["hooks"], z["mean"], z["V"], z["eigenvalues"])}
 
 
 def model_revision(model, name: str = "gpt2") -> str | None:
@@ -862,8 +920,8 @@ def show(dir: Path, kind: str, layer: int, unit: int, side: str = "top", k: int 
     token around the stored one, and check that the stored value comes back."""
     import duckdb
 
-    hook = {"post": f"blocks.{layer}.mlp.hook_post", "resid": f"blocks.{layer}.hook_resid_pre" if layer < 12 else
-            "blocks.11.hook_resid_post", "sae": f"blocks.{layer}.hook_resid_pre.sae"}[kind]
+    hook = {"post": f"blocks.{layer}.mlp.hook_post", "resid": resid_hook(layer), "pc": f"{resid_hook(layer)}.pc",
+            "sae": f"blocks.{layer}.hook_resid_pre.sae"}[kind]
     stats = duckdb.sql(f"select * from '{dir / 'neurons.parquet'}' where hook = '{hook}' and unit = {unit}").df()
     if stats.empty:
         raise SystemExit(f"no unit {unit} at {hook} in {dir / 'neurons.parquet'}")
@@ -884,6 +942,10 @@ def show(dir: Path, kind: str, layer: int, unit: int, side: str = "top", k: int 
 
         sae = load_sae(sae_release, f"blocks.{layer}.hook_resid_pre", device)
         print(f"  SAE: {sae_release}")
+    elif kind == "pc":
+        sae = load_pc_bases(dir / "pcs.npz")[resid_hook(layer)].to(device)
+        print(f"  principal component {unit} of the residual stream's covariance in {np.load(dir / 'pcs.npz')['source']}, "
+              f"eigenvalue {float(sae.eigenvalues[unit]):.4g}")
     tokens = np.load(dir / "tokens.npy", mmap_mode="r")
     acts = recompute(load_model(device, backend), tokens, ex.row.to_numpy(), hook, unit, sae)
     tokenizer = load_tokenizer()
@@ -1151,15 +1213,18 @@ def main(argv=None):
     s.add_argument("--sae-events", default="", help="layers (of --sae-layers) whose nonzero feature activations are also "
                    "saved as sparse events, events-L<layer>-<start>-<stop>.parquet")
     s.add_argument("--positions", action="store_true", help="also keep statistics per position bucket (positions.parquet, resid_positions.npz)")
+    s.add_argument("--pcs", type=int, default=0, help="also make the top N principal components of every residual hook units "
+                   "(kind 'pc'), from the covariance in --pcs-from; with no --hooks, only those")
+    s.add_argument("--pcs-from", type=Path, help="an exported atlas whose resid.npz gives the principal components")
     s.add_argument("--hooks", help="comma-separated fnmatch patterns over hook names, e.g. 'blocks.[0-2].mlp.hook_pre' (default: MLP hook_post in every layer and the residual stream)")
     s = sub.add_parser("export", help="merge state-*.pt -> parquet + npz")
     s.add_argument("dir", type=Path)
     s = sub.add_parser("show", help="a unit's statistics and top contexts, rerun from tokens.npy")
     s.add_argument("dir", type=Path)
-    s.add_argument("kind", choices=["post", "resid", "sae"], help="post: MLP neuron; resid: residual dimension; sae: SAE feature")
+    s.add_argument("kind", choices=["post", "resid", "pc", "sae"], help="post: MLP neuron; resid: residual dimension; pc: principal component of the residual stream; sae: SAE feature")
     s.add_argument("layer", type=int, help="the block (resid: 12 is the final residual stream)")
     s.add_argument("unit", type=int)
-    s.add_argument("--side", choices=["top", "bottom"], default="top", help="bottom: the most negative (residual dimensions)")
+    s.add_argument("--side", choices=["top", "bottom"], default="top", help="bottom: the most negative (residual dimensions, principal components)")
     s.add_argument("-k", type=int, default=5, help="how many contexts")
     s.add_argument("--sae", help="the SAE release, if not the one recorded in the run's state files")
     s.add_argument("--device", default="cpu")
@@ -1202,6 +1267,11 @@ def main(argv=None):
         sae_layers = [int(l) for l in args.sae_layers.split(",") if l]
         events = tuple(int(l) for l in args.sae_events.split(",") if l)
         assert set(events) <= set(sae_layers), "--sae-events layers must be among --sae-layers"
+        pcs = {}
+        if args.pcs:
+            assert args.pcs_from is not None, "--pcs needs --pcs-from, an exported atlas"
+            pcs = {h: b.to(args.device) for h, b in pc_bases(args.pcs_from, args.pcs).items()}
+            save_pc_bases(pcs, args.dir / "pcs.npz", args.pcs_from)
         saes = {}
         if args.sae:
             from sae_gate import load_sae
@@ -1210,12 +1280,13 @@ def main(argv=None):
         for start, stop in ranges:
             t0 = time.time()
             atlas = run(model, tokens, start, stop, args.batch_size, args.k, args.hist_stride, args.device,
-                        progress=len(ranges) == 1, hooks=select_hooks(model.cfg, args.hooks), positions=args.positions,
-                        saes=saes, events=events)
+                        progress=len(ranges) == 1, positions=args.positions, saes=saes, events=events, pcs=pcs,
+                        hooks={} if pcs and args.hooks is None else select_hooks(model.cfg, args.hooks))
             dt = time.time() - t0
             state = atlas.state() | {"rows": (start, stop), "model": "gpt2", "model_revision": model_revision(model), "backend": args.backend,
                                      "git_commit": git_commit(), "torch": str(torch.__version__), "seconds": dt,
-                                     "saes": {l: {"release": args.sae, "sae_id": f"blocks.{l}.hook_resid_pre"} for l in saes}}
+                                     "saes": {l: {"release": args.sae, "sae_id": f"blocks.{l}.hook_resid_pre"} for l in saes},
+                                     "pcs": {"n": args.pcs, "from": str(args.pcs_from)} if pcs else {}}
             path = args.dir / f"state-{start}-{stop}.pt"
             torch.save(state, path)
             for layer, chunks in atlas.events.items():
