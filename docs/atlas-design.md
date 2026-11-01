@@ -1,6 +1,6 @@
 # GPT-2 Activation Atlas — Design Doc
 
-*Ryan Reece, 2026-10-22, updated 2026-10-30.*
+*Ryan Reece, 2026-10-22, updated 2026-11-01.*
 
 ## Summary
 
@@ -16,7 +16,7 @@ The atlas should answer "what does this unit respond to, how often, and how stro
 
 - Per-unit summaries for every MLP neuron (12 × 3072) and residual dimension (13 × 768): count, mean, std, max, firing rate, quantiles, histogram.
 - Top-k exemplars per unit (and bottom-k for residual dimensions, which are signed), stored as pointers into the token stream and shown with decoded context.
-- Residual-stream mean and covariance per layer, for PCA, whitening and outlier dimensions.
+- Residual-stream mean and covariance per layer, for PCA, whitening and outlier dimensions; and the top principal components as units in their own right, with exemplars.
 - The same outputs in SAE feature bases (stage 2), so neurons and features can be compared side by side.
 - Horizontal scaling: shards run on any number of machines and merge exactly.
 - Every number traceable to a model revision, corpus shard, code commit and processing convention.
@@ -47,7 +47,7 @@ The pipeline is three commands over plain files: `tokenize` once, `run` per shar
 
 **Data model.** A *row* is one sequence the model processes independently: BOS plus 127 consecutive tokens from one document (511 with `--seq-len 512`); by default one randomly chosen window per document, from eight files of the corpus (`--dataset`: OpenWebText by default, FineWeb or Python code), with documents sampled across each whole file (random row groups) because the files are not shuffled. A *pointer* is `(row, pos)`, stored as the integer `row × seq_len + pos`; positions 1 onward are real tokens. Shards are row ranges, so a shard's state is self-describing and any set of non-overlapping shards merges into one atlas.
 
-**Hook points (stage 1).** MLP `hook_post` in all 12 layers (3072 units each) and the residual stream at 13 points: `hook_resid_pre` for layers 0–11 plus the final `hook_resid_post`. The forward pass stops after the last hook, so no layer past it runs; `--hooks` selects a subset for deep scans. In stage 2 (`--sae`) an SAE encoder runs inside the same hooks: its features become atlas units at the chosen layers (`--sae-layers`), and `--sae-events` writes their nonzero activations as sparse `(row, pos, feature, value)` events, one Parquet file per layer and shard. `--positions` also keeps every statistic per position bucket.
+**Hook points (stage 1).** MLP `hook_post` in all 12 layers (3072 units each) and the residual stream at 13 points: `hook_resid_pre` for layers 0–11 plus the final `hook_resid_post`. The forward pass stops after the last hook, so no layer past it runs; `--hooks` selects a subset for deep scans. In stage 2 (`--sae`) an SAE encoder runs inside the same hooks: its features become atlas units at the chosen layers (`--sae-layers`), and `--sae-events` writes their nonzero activations as sparse `(row, pos, feature, value)` events, one Parquet file per layer and shard. `--positions` also keeps every statistic per position bucket. `--pcs N --pcs-from DIR` makes the top N principal components of every residual hook units the same way, from the covariance an earlier atlas exported (written to `pcs.npz`), with top- and bottom-k exemplars.
 
 **Model backends.** The default backend, `HFGPT2`, is plain Hugging Face `GPT2Model` (no LM head, so no unembed) with PyTorch forward hooks, exposed under TransformerLens hook names. Compatibility mode changes only one thing the atlas reads: everything written to the residual stream has its per-token mean over d_model removed, because centering the writing weights is linear. `HFGPT2` applies that one subtraction. `TLGPT2`, the TransformerLens bridge, is kept as the reference, and `tests/test_backends.py` holds the two equal at every hook point. TransformerLens stays the tool for circuit work (patching, per-head outputs, direct logit attribution), where it saves real effort.
 
@@ -59,7 +59,7 @@ Stage 1 is built and validated on 1M tokens, with both backends. The code lives 
 
 | Check | Result |
 | --- | --- |
-| Merge exactness (unit tests: moments, covariance, top-k, histogram, state round trip, tokenizer) | pass; split vs. whole agree to float32 rounding (~1e-7 relative). Now part of a 55-test suite ([validation](results-stage2.md#5-validation)) |
+| Merge exactness (unit tests: moments, covariance, top-k, histogram, state round trip, tokenizer) | pass; split vs. whole agree to float32 rounding (~1e-7 relative). Now part of a 57-test suite ([validation](results-stage2.md#5-validation)) |
 | HF backend vs. TransformerLens bridge, per hook (7 hook types × layers 0, 5, 11, BOS included) | 21 of 21 agree within 2e-5 of the activation scale; raw HF residuals fail without centering, as they should |
 | Full 1M-token atlas, HF vs. TL backend | means, stds, quantiles agree to ~1e-5 relative; largest difference in any unit's max is 2e-4; 0.6% of top-k pointers swap among exact ties (identical left contexts) |
 | Pointers reproduce: recompute stored top-k entries from `(row, pos)` | 10 of 10 match to 5 decimals, layers 0, 9 and 11 |

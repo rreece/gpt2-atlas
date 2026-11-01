@@ -276,3 +276,21 @@ def test_ioi_name_dataset_and_offdict_split():
     inside = sae.decode(sae.encode(x))  # a combination of the active decoder rows
     out2 = offdict_split(sae, x, {"x_hat": inside, "rest": x - inside}, d, torch.ones(5))
     torch.testing.assert_close(out2["components"]["x_hat"], torch.zeros(5), atol=1e-4, rtol=0)  # float32 QR
+
+
+def test_pc_basis_from_covariance():
+    """PCBasis: orthonormal components, largest variance first, each projection's variance its eigenvalue, and each
+    component's largest entry positive; hook names, layers and kinds for principal-component units."""
+    from atlas import PCBasis, hook_kind, hook_layer, hook_order
+
+    g = np.random.default_rng(0)
+    X = g.normal(size=(5000, 8)) @ g.normal(size=(8, 8)) + 3.0
+    b = PCBasis.from_covariance(X.mean(0), np.cov(X, rowvar=False), 5)
+    V = b.V.double().numpy()
+    np.testing.assert_allclose(V @ V.T, np.eye(5), atol=1e-6)
+    assert (np.diff(b.eigenvalues.numpy()) <= 0).all()
+    proj = b.encode(torch.as_tensor(X, dtype=torch.float32)).double().numpy()
+    np.testing.assert_allclose(proj.var(0, ddof=1), b.eigenvalues.numpy(), rtol=1e-4)
+    assert (V[np.arange(5), np.abs(V).argmax(1)] > 0).all()
+    name = "blocks.11.hook_resid_post.pc"
+    assert (hook_kind(name), hook_layer(name), hook_order(name)) == ("pc", 12, (11, 6))

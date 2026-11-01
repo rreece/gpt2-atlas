@@ -29,6 +29,7 @@ After that it just activates the venv and sets `PATH` (`scripts/`) and `PYTHONPA
     run-notebook                             # same notebook headless, in place; figures -> docs/figures/results_*.png
     run-sae-gate                             # stage 2 gate: pretrained SAEs vs their release's metrics, ~40 min
     python -m atlas run DIR --sae gpt2-small-res-jb --sae-layers 6,9 --sae-events 9   # stage 2: SAE features as units
+    python -m atlas run DIR --pcs 32 --pcs-from results/atlas   # the residual stream's top principal components as units
     python -c "import duckdb; duckdb.sql(\"select value, context from 'results/atlas/topk.parquet' where kind='post' and layer=9 and unit=1000 order by rank\").show()"
     pytest tests                             # exact merging; HF backend == TransformerLens bridge (~10 s)
 
@@ -40,12 +41,13 @@ The steps can also run separately, e.g. shards on different machines: `python -m
 The outputs are plain files in the run's directory (`results/` is not in git: run the pipeline first; `results/atlas-sae`
 comes from the `--sae` line above):
 
-    neurons.parquet      one row per unit: hook, kind (post = MLP neuron, resid, sae), layer, unit, n, mean, std, max,
+    neurons.parquet      one row per unit: hook, kind (post = MLP neuron, resid, pc, sae), layer, unit, n, mean, std, max,
                          frac_pos (firing rate), p50 ... p999, and bootstrap errors (*_err, *_err_stat)
-    topk.parquet         one row per exemplar: hook, kind, layer, unit, side (top; bottom for resid), rank, value,
+    topk.parquet         one row per exemplar: hook, kind, layer, unit, side (top; bottom for resid and pc), rank, value,
                          row, pos, token, context (decoded, the token marked « »)
     events-L9-*.parquet  SAE runs only: every nonzero feature activation at layer 9: row, pos, feature, value
     resid.npz            per layer 0-12: mean [13, 768], cov [13, 768, 768], total variance and effective dimension
+    pcs.npz              PC runs only: each residual hook's mean and top principal components (rows of V), eigenvalues
     tokens.npy           the token ids [rows, seq_len] that (row, pos) point into
 
 Query the files with DuckDB, which reads only the columns and rows a query needs (the events are 71M rows), then
@@ -80,7 +82,7 @@ spectrum = np.linalg.eigvalsh(resid["cov"][9])[::-1]  # PCA of the residual stre
 
 The atlas answers only from what it stores: summaries and the top 20 per unit (plus, for SAE features at layer 9,
 every activation). Anything else is recomputed: activations are a pure function of (weights, tokens), so
-`python -m atlas show DIR KIND LAYER UNIT` (KIND: post, resid or sae) reruns a unit's top contexts from `tokens.npy`,
+`python -m atlas show DIR KIND LAYER UNIT` (KIND: post, resid, pc or sae) reruns a unit's top contexts from `tokens.npy`,
 showing the unit on every token around the stored one and checking that the stored value comes back, and
 `atlas.recompute(model, tokens, rows, hook, unit)` returns any hook's activations on any rows.
 

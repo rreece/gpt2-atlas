@@ -18,7 +18,8 @@ tokens:
   further than the noise for FineWeb, and 85–133 times for Python code. Within a context, only the first ~16 positions
   differ much from the rest. Processing conventions (centering the residual stream) change almost nothing.
 - **The residual stream expands, then collapses.** Its effective dimension rises from 14 at the embedding to about 170
-  in layers 7–9, then falls to about 7 at the final residual. A few dimensions are near-constant offsets.
+  in layers 7–9, then falls to about 7 at the final residual. Its largest direction in layers 0–5 is position; at the
+  final residual it is about the next token (newline against "."). A few dimensions are near-constant offsets.
 - **Rare and silent neurons are in the first layers.** Almost all neurons that fire on fewer than 1 in 10⁴ tokens are
   in layers 0–2, and 89 there never fire in 50M tokens.
 
@@ -49,13 +50,14 @@ how GPT-2 small's indirect-object-identification (IOI) circuit repairs itself wh
   (`run-atlas`; `python -m atlas tokenize|run|export`).
 - **Put SAE features in the atlas** as units, with every nonzero activation kept as a sparse event (`run --sae`).
 - **Query it** with DuckDB or pandas: plain Parquet and npz files, no server ([README: Query](../README.md#query)).
+- **Make principal components units** of the residual stream, with exemplars (`run --pcs N --pcs-from DIR`).
 - **Inspect and recompute any unit**: `python -m atlas show DIR KIND LAYER UNIT` prints a unit's statistics and reruns
   its top contexts from the stored tokens; `atlas.recompute` returns any hook's activations on any rows.
 - **Gate a pretrained SAE** against its published metrics on this pipeline, in its own context format (`run-sae-gate`).
 - **Study a circuit in the feature basis** (`python/ioi.py`): the IOI prompts; mean, zero and resample ablation of any
   heads; the logit difference split exactly into heads, MLPs, SAE features, bias and error; and any SAE spliced into
   the residual stream.
-- **Reproduce every result and figure** by rerunning `notebooks/atlas.ipynb` (`run-notebook`), and the 55 unit tests
+- **Reproduce every result and figure** by rerunning `notebooks/atlas.ipynb` (`run-notebook`), and the 57 unit tests
   (`pytest tests`).
 
 **The demo** (`notebooks/demo.ipynb`, 23 s) shows these working together in five steps:
