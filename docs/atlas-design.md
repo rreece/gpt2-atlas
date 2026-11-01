@@ -95,6 +95,11 @@ Stage 2 runs pretrained SAEs inside the same pipeline. The code is `--sae`, `--s
 - **IOI repair.** With the name movers ablated, the repair restores the clean run's LD-carrying features (cosine 0.86–0.94 in three dictionaries), mostly "say this name" features. The SAE error carries about half the logit difference with 24k and 32k dictionaries and a fifth to a third with 128k. The off-dictionary part is written by the circuit's own heads and is a small-norm, structured remainder (3% of the final residual's squared norm, a quarter to two fifths of the LD), missed because the logit direction carries little of the stream's norm, and spread over hundreds of inactive features rather than held by a few. These claims hold across ablation methods, prompt sets and templates. Spliced in before layer 10, every SAE loses a third to a half of the LD and none leaves the repair intact; Apollo's e2e SAEs, trained on the model's output, keep 68–69% against 50% for a local SAE at the same L0 ([results](results-stage2.md#3-the-ioi-repair-in-the-sae-basis)).
 - **Still to do.** Layers 10–11 in the feature atlas, the corpus and position systematics in the feature basis, and feature matching across dictionaries.
 
+See also:
+
+-   Goodfire. (2026). [A practical guide to sparse autoencoders (SAEs)](https://www.goodfire.com/blog/a-practical-guide-to-saes).
+
+
 ## Roadmap
 
 Stage 1 is finished at laptop scale: every stage 1 systematic in the table below is measured ([results](results-stage1.md)). The gate into stage 2 has passed, and stage 2 is in progress (see [Stage 2 status](#stage-2-status)). The gate into stage 3 asks for a question pretrained dictionaries cannot answer. The logit difference they miss in the IOI task is the first: it sits in a minor direction of the stream that a reconstruction loss under-weights, and it is spread over hundreds of the dictionary's directions rather than held by a few inactive features, so a better encoder would not recover it. A downstream objective recovers part of it: Apollo's end-to-end SAEs, trained on the model's output over OpenWebText, recover a third of what a local SAE loses before layer 10. Whether an objective weighted to the task recovers the rest, with those SAEs as the baseline, is the question for stage 3 ([results](results-stage2.md#3-the-ioi-repair-in-the-sae-basis)).
