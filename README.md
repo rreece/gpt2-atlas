@@ -5,7 +5,7 @@ per-unit statistics, top-activating contexts with decoded text, and residual-str
 errors. Built around streaming, exactly mergeable reductions, so it never stores raw activations, and kept
 laptop-sized: 1M OpenWebText tokens from ~8k documents in about 5 minutes on an M4.
 
-**Design: [docs/atlas-design.md](docs/atlas-design.md)** · **Results: [stage 1](docs/results-stage1.md) · [stage 2](docs/results-stage2.md)**
+**Design: [docs/atlas-design.md](docs/atlas-design.md)** · **Results: [summary](docs/results.md) · [stage 1](docs/results-stage1.md) · [stage 2](docs/results-stage2.md)**
 
 
 ![MLP neuron activation statistics in GPT2 with OpenWebText data.](docs/figures/results_mlp_neurons.png)
