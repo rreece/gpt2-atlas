@@ -135,3 +135,11 @@ Atlas numbers are measurements conditional on a corpus, a convention and a dicti
 - [ ] **Sequence length.** 128 keeps attention cheap and matches IOI-length prompts; 512 or 1024 sees long-context behaviour at 4–8× the attention cost.
 - [ ] **Which hook points next.** Attention outputs per head (`hook_z`) would tie the atlas directly to the head-level IOI analysis. `ioi.py` already reads each head's output at `attn.c_proj` for its 128 prompts; the atlas does not yet accumulate it over the corpus.
 - [ ] **Naming.** "row" is the array axis; "seq" may read better in code and Parquet columns.
+
+
+## See also
+
+- https://github.com/liusida/Residual-Stream-GPT-2
+- https://github.com/liusida/ai-experiments
+- https://github.com/liusida/Causal-Tracing-Demo
+
